@@ -65,7 +65,7 @@ dev/release.sh ${VERSION} # e.g. dev/release.sh 1.0.0
 
 ## License
 
-Licensed under the Apache License 2.0. See `LICENSE.txt` for details.
+Licensed under the Apache License 2.0. See [LICENSE.txt](LICENSE.txt) for details.
 
 Copyright 2026 Enactic, Inc.
 

@@ -64,6 +64,33 @@ jobs:
             dist/${{ env.PACKAGE_NAME }}-${{ env.VERSION }}.tar.gz
             dist/${{ env.PACKAGE_NAME }}-${{ env.VERSION }}.tar.gz.sha256
             dist/${{ env.PACKAGE_NAME }}-${{ env.VERSION }}.tar.gz.sha512
+  release:
+    name: Release
+    if: github.ref_type == 'tag'
+    needs:
+      - source
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+      discussions: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: source
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${GITHUB_REF_NAME}
+          gh release create ${version} \
+            --discussion-category Announcements \
+            --generate-notes \
+            --repo ${GITHUB_REPOSITORY} \
+            --title "OpenArm Driver ${version}" \
+            --verify-tag \
+            *.tar.gz*
   pypi:
     name: PyPI
     if: github.ref_type == 'tag'

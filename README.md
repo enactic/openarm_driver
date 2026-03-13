@@ -4,10 +4,12 @@ A Python library for controlling [OpenArm](https://github.com/enactic/openarm/),
 
 ## Quick start
 
+TODO
+
 ## Install
 
 ```bash
-pip install .
+pip install openarm-driver
 ```
 
 ## Sample usage
@@ -45,6 +47,14 @@ Please refer to [src/openarm_driver/config.yaml](src/openarm_driver/config.yaml)
 ```bash
 uv sync
 uv run pytest
+```
+
+### Release
+
+```bash
+git clone git@github.com:enactic/openarm_driver.git
+cd openarm_driver
+dev/release.sh ${VERSION} # e.g. dev/release.sh 1.0.0
 ```
 
 ## Related links

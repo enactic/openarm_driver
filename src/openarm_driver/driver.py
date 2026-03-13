@@ -215,6 +215,28 @@ class SingleArmDriver:
             self.send_position(smoothed_position)
             time.sleep(1.0 / hz)
 
+    def move_to_start_position(self):
+        """Move to start position."""
+        start_config = self.config.get_start_config()
+        if start_config["moves"]:
+            for move in start_config["moves"]:
+                self.smooth_move(
+                    move["position"][self.arm_side],
+                    hz=move["hz"],
+                    duration=move["duration"],
+                )
+
+    def move_to_stop_position(self):
+        """Move to end position."""
+        end_config = self.config.get_stop_config()
+        if end_config["moves"]:
+            for move in end_config["moves"]:
+                self.smooth_move(
+                    move["position"][self.arm_side],
+                    hz=move["hz"],
+                    duration=move["duration"],
+                )
+
     def _interpolate(
         self, positions: np.ndarray, num_steps: int
     ) -> Iterator[np.ndarray]:
@@ -227,21 +249,7 @@ class SingleArmDriver:
             yield self.openarm.get_gripper().get_motors()[0]
 
     def _on_start(self):
-        start_config = self.config.get_start_config()
-        if start_config["moves"]:
-            for move in start_config["moves"]:
-                self.smooth_move(
-                    move["position"][self.arm_side],
-                    hz=move["hz"],
-                    duration=move["duration"],
-                )
+        self.move_to_start_position()
 
     def _on_stop(self):
-        end_config = self.config.get_stop_config()
-        if end_config["moves"]:
-            for move in end_config["moves"]:
-                self.smooth_move(
-                    move["position"][self.arm_side],
-                    hz=move["hz"],
-                    duration=move["duration"],
-                )
+        self.move_to_stop_position()

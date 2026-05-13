@@ -34,7 +34,7 @@ class Config:
         if config_path is None:
             # Use default config in the package directory
             package_dir = Path(__file__).parent
-            config_path = package_dir / "openarm_cell.yaml
+            config_path = package_dir / "openarm_cell.yaml"
 
         with open(config_path) as f:
             self._config = yaml.safe_load(f)

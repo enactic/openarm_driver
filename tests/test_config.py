@@ -115,7 +115,7 @@ def test_get_motor_types():
         "DM4310",
         "DM4310",
         "DM4310",
-        "DM3507",
+        "DM4310",
     ]
 
 

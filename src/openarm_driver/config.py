@@ -14,6 +14,7 @@
 
 """Config for OpenArm Driver."""
 
+import importlib.resources
 from pathlib import Path
 
 import numpy as np
@@ -23,21 +24,41 @@ import yaml
 class Config:
     """Configuration loader for OpenArm driver."""
 
-    def __init__(self, config_path: str | None = None):
+    @staticmethod
+    def _resolve_config(config_path: str | Path | None):
+        if config_path is None:
+            return importlib.resources.files(__package__).joinpath(
+                "configs",
+                "openarm_cell.yaml",
+            )
+
+        path = Path(config_path)
+        if path.exists():
+            return path
+
+        if path.parent == Path("."):
+            resource = importlib.resources.files(__package__).joinpath(
+                "configs",
+                path.name,
+            )
+            if resource.is_file():
+                return resource
+        return path
+
+    def __init__(self, config_path: str | Path | None = None):
         """Load configuration from YAML file.
 
         Args:
-            config_path: Path to config YAML file. If None, uses default config.yaml
-                        in the package directory.
+            config_path: Path to config YAML file. If None, uses the bundled
+                configs/openarm_cell.yaml. Bare file names are resolved from
+                the bundled configs directory.
 
         """
-        if config_path is None:
-            # Use default config in the package directory
-            package_dir = Path(__file__).parent
-            config_path = package_dir / "openarm_cell.yaml"
+        config_resource = self._resolve_config(config_path)
 
-        with open(config_path) as f:
-            self._config = yaml.safe_load(f)
+        with importlib.resources.as_file(config_resource) as config_file:
+            with open(config_file) as f:
+                self._config = yaml.safe_load(f)
 
     def get_joint_limits(self, arm_side: str) -> np.ndarray:
         """Get joint limits for specified arm."""

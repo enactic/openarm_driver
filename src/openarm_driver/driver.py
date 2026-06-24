@@ -162,6 +162,69 @@ class SingleArmDriver:
         """Fetch the torque."""
         return self.fetch_state(refresh=refresh)["qtorque"]
 
+    def send_mit_control(
+        self,
+        kps: ArrayLike,
+        kds: ArrayLike,
+        position: ArrayLike,
+        velocity: ArrayLike,
+        torque_ff: ArrayLike,
+    ):
+        """Send MIT control to the MIT joints only (arm motors if gripper is POS_FORCE).
+
+        Args:
+            kps: Proportional gains.
+            kds: Derivative gains.
+            position: Desired joint positions for the MIT motors (first n).
+            velocity: Desired joint velocities.
+            torque_ff: Desired joint torque feedforward.
+
+        """
+        kps_arr = np.asarray(kps, dtype=float)
+        kds_arr = np.asarray(kds, dtype=float)
+        target_pos_arr = np.asarray(position, dtype=float)
+        vel_arr = np.asarray(velocity, dtype=float)
+        tau_arr = np.asarray(torque_ff, dtype=float)
+
+        n = self.num_mit_motors
+        if (
+            kps_arr.shape != (n,)
+            or kds_arr.shape != (n,)
+            or target_pos_arr.shape != (n,)
+            or vel_arr.shape != (n,)
+            or tau_arr.shape != (n,)
+        ):
+            raise ValueError(
+                f"kps, kds, position, velocity, and torque_ff must each have length {n}, "
+                f"got {kps_arr.shape}, {kds_arr.shape}, {target_pos_arr.shape}, {vel_arr.shape}, {tau_arr.shape}"
+            )
+        self.openarm.get_arm().mit_control_all(
+            [
+                oa.MITParam(
+                    kps_arr[i],
+                    kds_arr[i],
+                    target_pos_arr[i] + self.joint_offsets[i],
+                    vel_arr[i],
+                    tau_arr[i],
+                )
+                for i in range(n)
+            ]
+        )
+
+    def _send_gripper_position(self, position: float):
+        """Send position command to the gripper using POS_FORCE control.
+
+        Args:
+            position: Desired gripper position (before joint offset).
+
+        """
+        # TODO: Now We should multiply 10 to convert Nm to pu?
+        self.openarm.get_gripper().set_position(
+            position + self.joint_offsets[-1],
+            speed_rad_s=self.gripper_posforce_limits[0],
+            torque_pu=self.gripper_posforce_limits[1] / 4.5,
+        )
+
     def send_position(self, position: ArrayLike):
         """Move the arm by sending the position."""
         checked_result = self.safety_checker.check(position, driver=self)
@@ -174,25 +237,11 @@ class SingleArmDriver:
         target_pos = np.asarray(position, dtype=float)
         self.last_command = target_pos
 
-        self.openarm.get_arm().mit_control_all(
-            [
-                oa.MITParam(
-                    self.kps[i],
-                    self.kds[i],
-                    target_pos[i] + self.joint_offsets[i],
-                    0,
-                    0,
-                )
-                for i in range(self.num_mit_motors)
-            ]
-        )
+        n = self.num_mit_motors
+        self.send_mit_control(self.kps[:n], self.kds[:n], target_pos[:n], np.zeros(n), np.zeros(n))
+
         if self.gripper_posforce:
-            # TODO: Now We should multiply 10 to convert Nm to pu?
-            self.openarm.get_gripper().set_position(
-                target_pos[-1] + self.joint_offsets[-1],
-                speed_rad_s=self.gripper_posforce_limits[0],
-                torque_pu=self.gripper_posforce_limits[1] / 4.5,
-            )
+            self._send_gripper_position(target_pos[-1])
 
         self.set_latest_state(timeout_us=300)
 

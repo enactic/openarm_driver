@@ -106,8 +106,7 @@ def test_fetch_torque(can_mock):
 def test_fetch_mos_temp(can_mock):
     driver = SingleArmDriver("right_arm")
     temps = driver.fetch_mos_temp(refresh=True)
-    assert len(temps) == 8
-    assert all(t == 25 for t in temps)
+    assert temps == [25] * 8
     driver.fetch_mos_temp(refresh=False)
 
 

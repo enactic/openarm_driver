@@ -132,8 +132,13 @@ class SingleArmDriver:
         """Update the state."""
         self.openarm.recv_all(timeout_us)
         motor_values = (
-            (m.get_position(), m.get_velocity(), m.get_torque(),
-             m.get_state_tmos(), m.get_state_trotor())
+            (
+                m.get_position(),
+                m.get_velocity(),
+                m.get_torque(),
+                m.get_state_tmos(),
+                m.get_state_trotor(),
+            )
             for m in self._iter_motors()
         )
         qpos, qvel, qtau, tmos, trotor = zip(*motor_values)

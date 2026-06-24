@@ -103,14 +103,14 @@ def test_fetch_torque(can_mock):
     driver.fetch_torque(refresh=False)
 
 
-def test_fetch_mos_temp(can_mock):
+def test_fetch_mos_temperature(can_mock):
     driver = SingleArmDriver("right_arm")
     temps = driver.fetch_mos_temperature(refresh=True)
     assert temps.tolist() == [25] * 8
     driver.fetch_mos_temperature(refresh=False)
 
 
-def test_fetch_rotor_temp(can_mock):
+def test_fetch_rotor_temperature(can_mock):
     driver = SingleArmDriver("right_arm")
     temps = driver.fetch_rotor_temperature(refresh=True)
     assert temps.tolist() == [30] * 8

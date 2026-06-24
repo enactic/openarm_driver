@@ -132,14 +132,17 @@ class SingleArmDriver:
         """Update the state."""
         self.openarm.recv_all(timeout_us)
         motor_values = (
-            (m.get_position(), m.get_velocity(), m.get_torque())
+            (m.get_position(), m.get_velocity(), m.get_torque(),
+             m.get_state_tmos(), m.get_state_trotor())
             for m in self._iter_motors()
         )
-        qpos, qvel, qtau = zip(*motor_values)
+        qpos, qvel, qtau, tmos, trotor = zip(*motor_values)
         self.latest_state = {
             "qpos": np.array(qpos, dtype=float) - self.joint_offsets,
             "qvel": np.array(qvel, dtype=float),
             "qtorque": np.array(qtau, dtype=float),
+            "tmos": np.array(tmos, dtype=int),
+            "trotor": np.array(trotor, dtype=int),
         }
 
     def fetch_state(self, refresh=True) -> dict[str, np.ndarray]:
@@ -161,6 +164,14 @@ class SingleArmDriver:
     def fetch_torque(self, refresh=True) -> np.ndarray:
         """Fetch the torque."""
         return self.fetch_state(refresh=refresh)["qtorque"]
+
+    def fetch_mos_temp(self, refresh=True) -> np.ndarray:
+        """Fetch the MOS temperature for each motor."""
+        return self.fetch_state(refresh=refresh)["tmos"]
+
+    def fetch_rotor_temp(self, refresh=True) -> np.ndarray:
+        """Fetch the rotor temperature for each motor."""
+        return self.fetch_state(refresh=refresh)["trotor"]
 
     def send_position(self, position: ArrayLike):
         """Move the arm by sending the position."""

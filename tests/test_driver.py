@@ -22,6 +22,8 @@ class MotorStub:
         self.position = 0.5
         self.velocity = 0.0
         self.torque = 0.0
+        self.tmos = 25
+        self.trotor = 30
 
     def get_position(self):
         return self.position
@@ -31,6 +33,12 @@ class MotorStub:
 
     def get_torque(self):
         return self.torque
+
+    def get_state_tmos(self):
+        return self.tmos
+
+    def get_state_trotor(self):
+        return self.trotor
 
 
 class CanMock:
@@ -93,6 +101,22 @@ def test_fetch_torque(can_mock):
     driver = SingleArmDriver("right_arm")
     driver.fetch_torque(refresh=True)
     driver.fetch_torque(refresh=False)
+
+
+def test_fetch_mos_temp(can_mock):
+    driver = SingleArmDriver("right_arm")
+    temps = driver.fetch_mos_temp(refresh=True)
+    assert len(temps) == 8
+    assert all(t == 25 for t in temps)
+    driver.fetch_mos_temp(refresh=False)
+
+
+def test_fetch_rotor_temp(can_mock):
+    driver = SingleArmDriver("right_arm")
+    temps = driver.fetch_rotor_temp(refresh=True)
+    assert len(temps) == 8
+    assert all(t == 30 for t in temps)
+    driver.fetch_rotor_temp(refresh=False)
 
 
 def test_fetch_state(can_mock):

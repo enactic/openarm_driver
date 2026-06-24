@@ -165,7 +165,7 @@ class SingleArmDriver:
         """Fetch the torque."""
         return self.fetch_state(refresh=refresh)["qtorque"]
 
-    def fetch_mos_temp(self, refresh=True) -> np.ndarray:
+    def fetch_mos_temperature(self, refresh=True) -> np.ndarray:
         """Fetch the MOS temperature for each motor."""
         return self.fetch_state(refresh=refresh)["tmos"]
 

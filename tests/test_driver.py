@@ -18,6 +18,7 @@ import numpy as np
 
 import pytest
 
+from openarm_driver.base_safety import CheckResult
 from openarm_driver.driver import SingleArmDriver
 from openarm_driver.safety import JointVelocityChecker
 
@@ -153,22 +154,38 @@ def test_delta_pos_limit(can_mock, config_mock_hard_delta_limit):
 
 
 @pytest.mark.parametrize(
-    ("command_time_s", "expected_delta"),
-    [(1.05, 0.05), (2.0, 0.1)],
+    ("dt_s", "expected_delta"),
+    [(0.05, 0.05), (0.1, 0.1)],
 )
-def test_velocity_limit(command_time_s, expected_delta):
+def test_velocity_limit(dt_s, expected_delta):
     checker = JointVelocityChecker([1.0] * 8)
-    driver = SimpleNamespace(
-        last_command=np.zeros(8),
-        last_command_time_s=1.0,
-    )
+    driver = SimpleNamespace(last_command=np.zeros(8))
     result = checker.check(
         [0.5] * 8,
         driver=driver,
-        command_time_s=command_time_s,
+        dt_s=dt_s,
     )
 
     assert not result.is_safe
     assert not result.force_stop
     assert result.check_type == "joint_velocity"
     np.testing.assert_allclose(result.fixed_joint_positions, [expected_delta] * 8)
+
+
+def test_driver_caps_command_dt(can_mock, monkeypatch):
+    command_times = iter([1.0, 2.0])
+    monkeypatch.setattr(
+        "openarm_driver.driver.time.monotonic",
+        lambda: next(command_times),
+    )
+
+    class RecordingChecker:
+        def check(self, joint_positions, **kwargs):
+            self.dt_s = kwargs["dt_s"]
+            return CheckResult(is_safe=True)
+
+    checker = RecordingChecker()
+    driver = SingleArmDriver("right_arm", safety_checker=checker)
+    driver.send_position(driver.last_command)
+
+    assert checker.dt_s == pytest.approx(0.1)

@@ -30,6 +30,9 @@ from .safety import (
 )
 
 
+MAX_COMMAND_DT_S = 0.1
+
+
 def _create_default_checker(arm_side: str, config: Config) -> CompositeChecker:
     """Create basic checker with joint limits."""
     joint_limits = config.get_joint_limits(arm_side)
@@ -185,8 +188,10 @@ class SingleArmDriver:
     def send_position(self, position: ArrayLike):
         """Move the arm by sending the position."""
         command_time_s = time.monotonic()
+        elapsed_s = max(command_time_s - self.last_command_time_s, 0.0)
+        dt_s = min(elapsed_s, MAX_COMMAND_DT_S)
         checked_result = self.safety_checker.check(
-            position, driver=self, command_time_s=command_time_s
+            position, driver=self, dt_s=dt_s
         )
         if not checked_result.is_safe:
             if checked_result.force_stop:

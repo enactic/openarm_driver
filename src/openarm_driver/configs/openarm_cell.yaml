@@ -40,8 +40,19 @@ joint_offsets:
   right_arm: [0.0, -0.506145, 1.570796, -1.745329, 0.0, 0.331612, -1.570796, 0.0]
   left_arm: [0.0, 0.506145, -1.570796, -1.745329, 0.0, -0.331612, 1.570796, 0.0]
 
-# Joint delta position limits (rad/s).
+# Maximum accepted single-command position jump (rad).
 joint_delta_position_limits:
+  - 1.8 # J0
+  - 1.8 # J1
+  - 3.3 # J2
+  - 2.3 # J3
+  - 3.5 # J4
+  - 3.5 # J5
+  - 3.5 # J6
+  - 3.5 # J7
+
+# Normal per-joint command velocity limits (rad/s).
+joint_velocity_limits:
   - 1.8 # J0
   - 1.8 # J1
   - 3.3 # J2

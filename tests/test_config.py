@@ -165,3 +165,9 @@ def test_get_stop_config():
     config = get_default_config()
     stop_config = config.get_stop_config()
     assert stop_config["moves"][0]["name"] == "initial"
+
+
+def test_get_joint_velocity_limits():
+    config = get_default_config()
+    velocity_limits = config.get_joint_velocity_limits()
+    assert velocity_limits == [1.8, 1.8, 3.3, 2.3, 3.5, 3.5, 3.5, 3.5]

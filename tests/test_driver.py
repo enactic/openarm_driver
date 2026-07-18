@@ -12,9 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+
+import numpy as np
+
 import pytest
 
 from openarm_driver.driver import SingleArmDriver
+from openarm_driver.safety import JointVelocityChecker
 
 
 class MotorStub:
@@ -145,3 +150,25 @@ def test_delta_pos_limit(can_mock, config_mock_hard_delta_limit):
     driver = SingleArmDriver("right_arm")
     with pytest.raises(RuntimeError):
         driver.send_position([3.0] * 8)
+
+
+@pytest.mark.parametrize(
+    ("command_time_s", "expected_delta"),
+    [(1.05, 0.05), (2.0, 0.1)],
+)
+def test_velocity_limit(command_time_s, expected_delta):
+    checker = JointVelocityChecker([1.0] * 8)
+    driver = SimpleNamespace(
+        last_command=np.zeros(8),
+        last_command_time_s=1.0,
+    )
+    result = checker.check(
+        [0.5] * 8,
+        driver=driver,
+        command_time_s=command_time_s,
+    )
+
+    assert not result.is_safe
+    assert not result.force_stop
+    assert result.check_type == "joint_velocity"
+    np.testing.assert_allclose(result.fixed_joint_positions, [expected_delta] * 8)

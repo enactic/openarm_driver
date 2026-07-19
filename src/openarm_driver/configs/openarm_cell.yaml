@@ -40,16 +40,27 @@ joint_offsets:
   right_arm: [0.0, -0.506145, 1.570796, -1.745329, 0.0, 0.331612, -1.570796, 0.0]
   left_arm: [0.0, 0.506145, -1.570796, -1.745329, 0.0, -0.331612, 1.570796, 0.0]
 
-# Joint delta position limits (rad/s).
+# Maximum accepted single-command position jump (rad).
 joint_delta_position_limits:
-  - 1.8 # J0
-  - 1.8 # J1
-  - 3.3 # J2
-  - 2.3 # J3
-  - 3.5 # J4
-  - 3.5 # J5
-  - 3.5 # J6
-  - 3.5 # J7
+  - 1.0 # J1
+  - 1.0 # J2
+  - 1.0 # J3
+  - 1.5 # J4
+  - 1.5 # J5
+  - 1.5 # J6
+  - 1.5 # J7
+  - 3.14 # J8
+
+# Per-joint command velocity limits (rad/s).
+joint_velocity_limits:
+  - 2.0 # J1
+  - 2.0 # J2
+  - 3.3 # J3
+  - 3.3 # J4
+  - 6.3 # J5
+  - 6.3 # J6
+  - 6.3 # J7
+  - 20.0 # J8 (gripper)
 
 # CAN interface
 can_interface:

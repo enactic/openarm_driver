@@ -37,4 +37,5 @@ from .base_safety import (
 from .safety import (
     JointPosChecker as JointPosChecker,
     JointDeltaPosChecker as JointDeltaPosChecker,
+    JointVelocityChecker as JointVelocityChecker,
 )

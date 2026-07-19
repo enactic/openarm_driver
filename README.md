@@ -38,7 +38,18 @@ finally:
 
 ## Config
 
-Please refer to [src/openarm_driver/config.yaml](src/openarm_driver/config.yaml), the default configuration.
+Please refer to the [default configuration](src/openarm_driver/configs/openarm_cell.yaml).
+
+The default safety checks run in this order:
+
+1. `JointPosChecker` clips commands to joint position limits.
+2. `JointDeltaPosChecker` rejects excessive single-command jumps.
+3. `JointVelocityChecker` limits the remaining command using the elapsed time.
+
+`joint_velocity_limits` is specified in rad/s. `send_position()` measures the
+elapsed command time automatically, so callers do not need to provide the node
+control frequency. Custom configurations may omit this field to disable command
+velocity limiting.
 
 ## Development
 

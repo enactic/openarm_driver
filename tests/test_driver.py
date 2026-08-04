@@ -129,9 +129,23 @@ def test_fetch_state(can_mock):
     driver.fetch_state(refresh=False)
 
 
-def test_send_position(can_mock):
+def test_send_position(can_mock, monkeypatch):
+    command_times = iter([1.0, 1.01])
+    monkeypatch.setattr(
+        "openarm_driver.driver.time.monotonic",
+        lambda: next(command_times),
+    )
     driver = SingleArmDriver("right_arm")
-    driver.send_position(driver.last_command)
+    driver.last_command = np.zeros(8)
+    requested = np.full(8, 0.01)
+
+    driver.send_position(requested)
+
+    np.testing.assert_allclose(driver.last_command, requested)
+    np.testing.assert_allclose(
+        driver.latest_state["qpos"][: driver.num_mit_motors],
+        requested[: driver.num_mit_motors],
+    )
 
 
 def test_smooth_move(can_mock):

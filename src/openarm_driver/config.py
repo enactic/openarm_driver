@@ -92,7 +92,7 @@ class Config:
         offsets = self._config["joint_offsets"][arm_side]
         return np.array(offsets)
 
-    def get_joint_delta_position_limits(self) -> dict:
+    def get_joint_delta_position_limits(self) -> list[float]:
         """Get joint delta position limits."""
         return self._config["joint_delta_position_limits"]
 

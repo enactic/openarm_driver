@@ -43,11 +43,14 @@ class JointPosChecker(Checker):
 
         if np.any(violations):
             violated_joints = np.where(violations)[0].tolist()
+            violated_joint_numbers = [joint + 1 for joint in violated_joints]
             return CheckResult(
                 is_safe=False,
                 force_stop=False,
                 fixed_joint_positions=position_limited,
-                message=f"Joint positions over limits at joints: {violated_joints}",
+                message=(
+                    f"Joint positions over limits at joints: {violated_joint_numbers}"
+                ),
                 check_type="joint_limits",
                 details={"violated_joints": violated_joints},
             )
@@ -60,7 +63,7 @@ class JointPosChecker(Checker):
 
 
 class JointDeltaPosChecker(Checker):
-    """Check that joint position changes don't exceed velocity limits."""
+    """Check that joint position changes don't exceed delta limits."""
 
     def __init__(self, delta_limits: ArrayLike):
         """Initialize delta position checker.
@@ -90,7 +93,8 @@ class JointDeltaPosChecker(Checker):
                     is_safe=False,
                     force_stop=True,
                     message=(
-                        f"Joint {i} delta {d:.4f} exceeds limit {self.delta_limits[i]:.4f}"
+                        f"Joint {i + 1} delta {d:.4f} "
+                        f"exceeds limit {self.delta_limits[i]:.4f}"
                     ),
                     check_type="joint_delta",
                     details={
@@ -142,11 +146,12 @@ class JointVelocityChecker(Checker):
         violations = np.abs(delta) > max_delta
         if np.any(violations):
             violated_joints = np.where(violations)[0].tolist()
+            violated_joint_numbers = [joint + 1 for joint in violated_joints]
             return CheckResult(
                 is_safe=False,
                 force_stop=False,
                 fixed_joint_positions=limited_positions,
-                message=f"Joint velocity limited at joints: {violated_joints}",
+                message=f"Joint velocity limited at joints: {violated_joint_numbers}",
                 check_type="joint_velocity",
                 details={"violated_joints": violated_joints, "dt_s": dt_s},
             )

@@ -26,19 +26,25 @@ from .base_safety import Checker, CompositeChecker
 from .safety import (
     JointPosChecker,
     JointDeltaPosChecker,
+    JointVelocityChecker,
 )
+
+
+MAX_COMMAND_DT_S = 0.1
 
 
 def _create_default_checker(arm_side: str, config: Config) -> CompositeChecker:
     """Create basic checker with joint limits."""
     joint_limits = config.get_joint_limits(arm_side)
     delta_limits = config.get_joint_delta_position_limits()
-    return CompositeChecker(
-        [
-            JointPosChecker(joint_limits),
-            JointDeltaPosChecker(delta_limits),
-        ]
-    )
+    checkers = [
+        JointPosChecker(joint_limits),
+        JointDeltaPosChecker(delta_limits),
+    ]
+    velocity_limits = config.get_joint_velocity_limits()
+    if velocity_limits is not None:
+        checkers.append(JointVelocityChecker(velocity_limits))
+    return CompositeChecker(checkers)
 
 
 class SingleArmDriver:
@@ -98,7 +104,7 @@ class SingleArmDriver:
         self.kps = self.config.get_default_kps() if kps is None else np.array(kps)
         self.kds = self.config.get_default_kds() if kds is None else np.array(kds)
 
-        # If no checker provided, create basic joint limit checker only
+        # If no checker is provided, use the default safety checks.
         self.safety_checker = (
             _create_default_checker(arm_side, self.config)
             if safety_checker is None
@@ -109,6 +115,7 @@ class SingleArmDriver:
         for _ in range(20):
             time.sleep(0.01)
             self.last_command = self.fetch_position(refresh=True)
+        self.last_command_time_s = time.monotonic()
 
     def start(self):
         """Start the arm."""
@@ -180,7 +187,14 @@ class SingleArmDriver:
 
     def send_position(self, position: ArrayLike):
         """Move the arm by sending the position."""
-        checked_result = self.safety_checker.check(position, driver=self)
+        command_time_s = time.monotonic()
+        elapsed_s = max(command_time_s - self.last_command_time_s, 0.0)
+        dt_s = min(elapsed_s, MAX_COMMAND_DT_S)
+        checked_result = self.safety_checker.check(
+            position,
+            driver=self,
+            dt_s=dt_s,
+        )
         if not checked_result.is_safe:
             if checked_result.force_stop:
                 raise RuntimeError(checked_result.message)
@@ -189,6 +203,7 @@ class SingleArmDriver:
 
         target_pos = np.asarray(position, dtype=float)
         self.last_command = target_pos
+        self.last_command_time_s = command_time_s
 
         self.openarm.get_arm().mit_control_all(
             [

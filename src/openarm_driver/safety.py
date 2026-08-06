@@ -105,3 +105,54 @@ class JointDeltaPosChecker(Checker):
             message="All joint deltas within limits.",
             check_type="joint_delta",
         )
+
+
+class JointVelocityChecker(Checker):
+    """Limit per-joint command velocity using elapsed command time."""
+
+    def __init__(self, velocity_limits: ArrayLike):
+        """Initialize with maximum command velocities in rad/s."""
+        self.velocity_limits = np.asarray(velocity_limits, dtype=float)
+        if (
+            self.velocity_limits.ndim != 1
+            or not np.all(np.isfinite(self.velocity_limits))
+            or np.any(self.velocity_limits <= 0.0)
+        ):
+            raise ValueError("Joint velocity limits must be finite and positive.")
+
+    def check(self, joint_positions: ArrayLike, **kwargs) -> CheckResult:
+        """Clamp a command to the motion allowed since the last command."""
+        dt_s = float(kwargs["dt_s"])
+        if not np.isfinite(dt_s) or dt_s < 0.0:
+            raise ValueError("Command period must be finite and non-negative.")
+
+        positions = np.asarray(joint_positions, dtype=float)
+        previous = np.asarray(kwargs["driver"].last_command, dtype=float)
+        if not (positions.shape == previous.shape == self.velocity_limits.shape):
+            raise ValueError(
+                "Joint positions, previous command, and velocity limits "
+                "must have the same shape."
+            )
+        if not np.all(np.isfinite(positions)) or not np.all(np.isfinite(previous)):
+            raise ValueError("Joint positions must contain only finite values.")
+
+        delta = positions - previous
+        max_delta = self.velocity_limits * dt_s
+        limited_positions = previous + np.clip(delta, -max_delta, max_delta)
+        violations = np.abs(delta) > max_delta
+        if np.any(violations):
+            violated_joints = np.where(violations)[0].tolist()
+            return CheckResult(
+                is_safe=False,
+                force_stop=False,
+                fixed_joint_positions=limited_positions,
+                message=f"Joint velocity limited at joints: {violated_joints}",
+                check_type="joint_velocity",
+                details={"violated_joints": violated_joints, "dt_s": dt_s},
+            )
+
+        return CheckResult(
+            is_safe=True,
+            message="All joint command velocities within limits.",
+            check_type="joint_velocity",
+        )

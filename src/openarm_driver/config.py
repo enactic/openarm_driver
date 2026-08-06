@@ -74,6 +74,10 @@ class Config:
         """Get joint delta position limits."""
         return self._config["joint_delta_position_limits"]
 
+    def get_joint_velocity_limits(self) -> list[float] | None:
+        """Get per-joint command velocity limits in rad/s."""
+        return self._config.get("joint_velocity_limits")
+
     def get_can_interface(self, arm_side: str) -> str:
         """Get can interface string."""
         return self._config["can_interface"][arm_side]

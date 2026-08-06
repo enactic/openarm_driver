@@ -12,9 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
+
+import numpy as np
 import pytest
 
+from openarm_driver.base_safety import CheckResult
+from openarm_driver.config import get_default_config
 from openarm_driver.driver import SingleArmDriver
+from openarm_driver.safety import JointPosChecker, JointVelocityChecker
 
 
 class MotorStub:
@@ -123,9 +129,23 @@ def test_fetch_state(can_mock):
     driver.fetch_state(refresh=False)
 
 
-def test_send_position(can_mock):
+def test_send_position(can_mock, monkeypatch):
+    command_times = iter([1.0, 1.01])
+    monkeypatch.setattr(
+        "openarm_driver.driver.time.monotonic",
+        lambda: next(command_times),
+    )
     driver = SingleArmDriver("right_arm")
-    driver.send_position([0.0] * 8)
+    driver.last_command = np.zeros(8)
+    requested = np.full(8, 0.01)
+
+    driver.send_position(requested)
+
+    np.testing.assert_allclose(driver.last_command, requested)
+    np.testing.assert_allclose(
+        driver.latest_state["qpos"][: driver.num_mit_motors],
+        requested[: driver.num_mit_motors],
+    )
 
 
 def test_smooth_move(can_mock):
@@ -134,7 +154,9 @@ def test_smooth_move(can_mock):
 
 
 def test_pos_limit(can_mock):
-    driver = SingleArmDriver("right_arm")
+    config = get_default_config()
+    checker = JointPosChecker(config.get_joint_limits("right_arm"))
+    driver = SingleArmDriver("right_arm", safety_checker=checker)
     driver.send_position([1.0] * 8)
     driver.send_position([2.0] * 8)
     driver.send_position([3.0] * 8)
@@ -145,3 +167,64 @@ def test_delta_pos_limit(can_mock, config_mock_hard_delta_limit):
     driver = SingleArmDriver("right_arm")
     with pytest.raises(RuntimeError):
         driver.send_position([3.0] * 8)
+
+
+def test_velocity_limit():
+    checker = JointVelocityChecker([1.0, 2.0])
+    driver = SimpleNamespace(last_command=np.zeros(2))
+
+    result = checker.check([1.0, -1.0], driver=driver, dt_s=0.1)
+
+    assert not result.is_safe
+    np.testing.assert_allclose(result.fixed_joint_positions, [0.1, -0.2])
+
+
+def test_default_velocity_limit_updates_command(can_mock, monkeypatch):
+    driver = SingleArmDriver("right_arm")
+    driver.last_command = np.zeros(8)
+    driver.last_command_time_s = 1.0
+    monkeypatch.setattr(
+        "openarm_driver.driver.time.monotonic",
+        lambda: 1.01,
+    )
+
+    requested = np.full(8, 0.1)
+    limits = np.asarray(driver.config.get_joint_velocity_limits())
+    expected = np.clip(requested, -limits * 0.01, limits * 0.01)
+
+    driver.send_position(requested)
+
+    np.testing.assert_allclose(driver.last_command, expected)
+    np.testing.assert_allclose(
+        driver.latest_state["qpos"][: driver.num_mit_motors],
+        expected[: driver.num_mit_motors],
+    )
+    assert driver.last_command_time_s == pytest.approx(1.01)
+
+
+@pytest.mark.parametrize("dt_s", [np.nan, np.inf, -0.1])
+def test_velocity_limit_rejects_invalid_dt(dt_s):
+    checker = JointVelocityChecker([1.0])
+    driver = SimpleNamespace(last_command=np.zeros(1))
+
+    with pytest.raises(ValueError, match="period"):
+        checker.check([1.0], driver=driver, dt_s=dt_s)
+
+
+def test_driver_caps_command_dt(can_mock, monkeypatch):
+    command_times = iter([1.0, 2.0])
+    monkeypatch.setattr(
+        "openarm_driver.driver.time.monotonic",
+        lambda: next(command_times),
+    )
+
+    class RecordingChecker:
+        def check(self, joint_positions, **kwargs):
+            self.dt_s = kwargs["dt_s"]
+            return CheckResult(is_safe=True)
+
+    checker = RecordingChecker()
+    driver = SingleArmDriver("right_arm", safety_checker=checker)
+    driver.send_position(driver.last_command)
+
+    assert checker.dt_s == pytest.approx(0.1)

@@ -16,6 +16,7 @@
 
 from .config import (
     Config as Config,
+    available_configs as available_configs,
     get_default_config as get_default_config,
     set_default_config as set_default_config,
 )

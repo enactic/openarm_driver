@@ -20,6 +20,33 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+CONFIGS_DIR_NAME = "configs"
+CONFIG_SUFFIX = ".yaml"
+DEFAULT_CONFIG_NAME = "openarm_cell"
+
+
+def _bundled_config(name: str):
+    """Return the bundled config resource for a name, or None if missing."""
+    configs_dir = importlib.resources.files(__package__).joinpath(CONFIGS_DIR_NAME)
+    for file_name in (name, name + CONFIG_SUFFIX):
+        resource = configs_dir.joinpath(file_name)
+        if resource.is_file():
+            return resource
+    return None
+
+
+def available_configs() -> list[str]:
+    """List the names of the bundled configs, without the ".yaml" suffix.
+
+    Any of these names can be passed to Config() to select a config.
+    """
+    configs_dir = importlib.resources.files(__package__).joinpath(CONFIGS_DIR_NAME)
+    return sorted(
+        entry.name.removesuffix(CONFIG_SUFFIX)
+        for entry in configs_dir.iterdir()
+        if entry.name.endswith(CONFIG_SUFFIX)
+    )
+
 
 class Config:
     """Configuration loader for OpenArm driver."""
@@ -27,21 +54,15 @@ class Config:
     @staticmethod
     def _resolve_config(config_path: str | Path | None):
         if config_path is None:
-            return importlib.resources.files(__package__).joinpath(
-                "configs",
-                "openarm_cell.yaml",
-            )
+            return _bundled_config(DEFAULT_CONFIG_NAME)
 
         path = Path(config_path)
         if path.exists():
             return path
 
         if path.parent == Path("."):
-            resource = importlib.resources.files(__package__).joinpath(
-                "configs",
-                path.name,
-            )
-            if resource.is_file():
+            resource = _bundled_config(path.name)
+            if resource is not None:
                 return resource
         return path
 
@@ -50,8 +71,9 @@ class Config:
 
         Args:
             config_path: Path to config YAML file. If None, uses the bundled
-                configs/openarm_cell.yaml. Bare file names are resolved from
-                the bundled configs directory.
+                "openarm_cell" config. Bare names are resolved from the
+                bundled configs directory, with or without the ".yaml"
+                suffix. See available_configs() for the bundled names.
 
         """
         config_resource = self._resolve_config(config_path)

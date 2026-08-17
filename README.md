@@ -40,6 +40,30 @@ finally:
 
 Please refer to the [default configuration](src/openarm_driver/configs/openarm_cell.yaml).
 
+### Bundled configurations
+
+The package bundles several configurations. Pass a bundled name to `Config()`
+to select one, or pass a path to use your own file:
+
+```python
+import openarm_driver
+
+openarm_driver.available_configs()
+# ['openarm_cell', 'openarm_cell_higher_pd', 'openarm_pedestal']
+
+config = openarm_driver.Config("openarm_pedestal")
+arm = openarm_driver.SingleArmDriver("right_arm", config)
+
+# Or make it the default for every driver created afterwards.
+openarm_driver.set_default_config(config)
+```
+
+| Name | Description |
+| --- | --- |
+| `openarm_cell` | Default. OpenArm mounted on the cell frame. |
+| `openarm_cell_higher_pd` | Same as `openarm_cell` with higher PD gains. |
+| `openarm_pedestal` | OpenArm mounted on the pedestal (zero joint offsets). |
+
 The default safety checks run in this order:
 
 1. `JointPosChecker` clips commands to joint position limits.

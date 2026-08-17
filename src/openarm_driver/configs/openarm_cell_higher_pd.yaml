@@ -73,12 +73,12 @@ motor_config:
   send_ids: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
   recv_ids: [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]
 
-# IF using POS_FORCE gripper, set to "POS_FORCE"
-# If POS_FORCE mode is used, you can set force limits here. and control gains will be ignored.
-# If MIT mode is used, control gains will be applied.
+# Set true to run the gripper (J8) in POS_FORCE mode, false to run it in MIT mode.
+# In POS_FORCE mode, the gripper follows gripper_posforce_limits below and its
+# control_gains entries (index 7) are ignored. Other joints are unaffected.
 gripper_posforce: true
-# This value will be used only if gripper_control_mode is "POS_FORCE"
-# index 0: max rad/s index 1: max force (Nm)
+# Used only when gripper_posforce is true.
+# index 0: max rad/s  index 1: max force (Nm)
 gripper_posforce_limits: [50.0, 1.0]
 
 # Default PD control gains

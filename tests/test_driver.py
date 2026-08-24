@@ -81,9 +81,16 @@ def config_mock_hard_delta_limit(monkeypatch):
     )
 
 
-def test_start(can_mock):
+def test_start_clears_command_dispatch_timestamp(can_mock):
     driver = SingleArmDriver("right_arm")
+    assert driver.last_command_dispatch_timestamp_ns is None
+    driver.last_command_dispatch_timestamp_ns = 123
+    driver._on_start = lambda: None
+
     driver.start()
+
+    assert driver.last_command_dispatch_timestamp_ns is None
+    assert driver.started
 
 
 def test_stop(can_mock):
@@ -135,17 +142,42 @@ def test_send_position(can_mock, monkeypatch):
         "openarm_driver.driver.time.monotonic",
         lambda: next(command_times),
     )
+    monkeypatch.setattr("openarm_driver.driver.time.time_ns", lambda: 123)
     driver = SingleArmDriver("right_arm")
     driver.last_command = np.zeros(8)
     requested = np.full(8, 0.01)
+    expected = requested.copy()
 
     driver.send_position(requested)
+    requested.fill(1.0)
 
-    np.testing.assert_allclose(driver.last_command, requested)
+    np.testing.assert_allclose(driver.last_command, expected)
+    assert driver.last_command_dispatch_timestamp_ns == 123
     np.testing.assert_allclose(
         driver.latest_state["qpos"][: driver.num_mit_motors],
-        requested[: driver.num_mit_motors],
+        expected[: driver.num_mit_motors],
     )
+
+
+def test_send_position_does_not_update_state_on_dispatch_error(can_mock, monkeypatch):
+    driver = SingleArmDriver("right_arm")
+    driver.last_command = np.zeros(8)
+    driver.last_command_time_s = 1.0
+    driver.last_command_dispatch_timestamp_ns = 123
+    monkeypatch.setattr("openarm_driver.driver.time.monotonic", lambda: 1.01)
+    monkeypatch.setattr("openarm_driver.driver.time.time_ns", lambda: 456)
+
+    def fail_dispatch(_):
+        raise RuntimeError("dispatch failed")
+
+    driver.openarm.mit_control_all = fail_dispatch
+
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        driver.send_position(np.full(8, 0.01))
+
+    np.testing.assert_allclose(driver.last_command, np.zeros(8))
+    assert driver.last_command_time_s == 1.0
+    assert driver.last_command_dispatch_timestamp_ns == 123
 
 
 def test_smooth_move(can_mock):

@@ -30,6 +30,12 @@ class MotorStub:
         self.torque = 0.0
         self.tmos = 25
         self.trotor = 30
+        # RID -> value. Pre-set to POS_FORCE so the driver's control mode
+        # verification sees a motor that accepted the mode.
+        self.params = {10: 4}
+
+    def get_param(self, rid):
+        return self.params.get(rid, -1)
 
     def get_position(self):
         return self.position

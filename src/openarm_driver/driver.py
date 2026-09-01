@@ -14,6 +14,7 @@
 
 """Driver for OpenArm."""
 
+import logging
 import time
 from collections.abc import Iterator
 
@@ -28,6 +29,12 @@ from .safety import (
     JointDeltaPosChecker,
     JointVelocityChecker,
 )
+
+logger = logging.getLogger(__name__)
+
+# Motor register holding the control mode. Writing it is a RAM-only write,
+# so it has to succeed on every startup unless the value was saved to flash.
+CTRL_MODE_RID = 10
 
 
 MAX_COMMAND_DT_S = 0.1
@@ -100,6 +107,12 @@ class SingleArmDriver:
 
         self.openarm.set_callback_mode_all(oa.CallbackMode.STATE)
 
+        # openarm_can writes the gripper's control mode inside
+        # init_gripper_motor without checking that the motor accepted it, and
+        # reports success either way. Verified in start().
+        self.gripper_send_id = send_ids[-1]
+        self.gripper_mode_verified = False
+
         # Use provided gains or defaults from config
         self.kps = self.config.get_default_kps() if kps is None else np.array(kps)
         self.kds = self.config.get_default_kds() if kds is None else np.array(kds)
@@ -117,8 +130,85 @@ class SingleArmDriver:
             self.last_command = self.fetch_position(refresh=True)
         self.last_command_time_s = time.monotonic()
 
+    def _verify_gripper_control_mode(self, mode, attempts: int = 10) -> bool:
+        """Write the gripper's control mode until the motor confirms it.
+
+        init_gripper_motor sends the CTRL_MODE write once and never checks the
+        reply, while marking the mode as set locally. When that write is lost
+        the motor stays in whatever mode its flash holds, every POS_FORCE
+        command goes out to send_id + 0x300, and the motor discards those
+        frames as an unknown id -- silently, with no error anywhere. That is
+        what makes the gripper occasionally come up dead while the arm is fine.
+
+        Returns whether the motor confirmed the mode.
+        """
+        gripper = self.openarm.get_gripper()
+        mode_value = mode.value
+
+        # A motor refuses a CTRL_MODE write while it is armed, and a previous
+        # run that exited without disabling leaves it armed.
+        self.openarm.disable_all()
+        time.sleep(0.05)
+
+        # Only the gripper should parse parameter frames. Putting every motor in
+        # PARAM mode makes the arm's state frames fail parameter parsing, and
+        # openarm_can prints "INVALID PARAM DATA" to stderr for each one.
+        self.openarm.set_callback_mode_all(oa.CallbackMode.IGNORE)
+        # Drop the replies to the disable above before the gripper starts
+        # parsing parameter frames, or its state reply is read as one.
+        self.openarm.recv_all(1000)
+        gripper.set_callback_mode_all(oa.CallbackMode.PARAM)
+        try:
+            for attempt in range(1, attempts + 1):
+                gripper.set_control_mode_one(0, mode)
+                time.sleep(0.01)
+                gripper.query_param_all(CTRL_MODE_RID)
+                self.openarm.recv_all(2000)
+
+                # get_motors() returns copies, so read the parameter back only
+                # after recv_all has updated the live motor objects.
+                actual = gripper.get_motors()[0].get_param(CTRL_MODE_RID)
+                if actual == mode_value:
+                    if attempt > 1:
+                        logger.info(
+                            "gripper control mode confirmed on attempt %d/%d",
+                            attempt,
+                            attempts,
+                        )
+                    return True
+                time.sleep(0.02)
+
+            logger.warning(
+                "gripper control mode could not be set after %d attempts "
+                "(wanted %d, motor reports %s). The gripper will accept no "
+                "position commands and will fail silently, because the motor "
+                "discards frames for a mode it is not in. Continuing anyway. "
+                "To make it persistent: openarm-can-cli -i %s write_param "
+                "--id %d --rid %d --value %d --save",
+                attempts,
+                mode_value,
+                actual,
+                self.can_interface,
+                self.gripper_send_id,
+                CTRL_MODE_RID,
+                mode_value,
+            )
+            return False
+        finally:
+            # Drain the parameter exchange before switching back. A parameter
+            # frame read in STATE mode is parsed as motor state and would put
+            # nonsense into the gripper's position and torque.
+            self.openarm.set_callback_mode_all(oa.CallbackMode.IGNORE)
+            self.openarm.recv_all(1000)
+            self.openarm.set_callback_mode_all(oa.CallbackMode.STATE)
+
     def start(self):
         """Start the arm."""
+        if self.gripper_posforce:
+            self.gripper_mode_verified = self._verify_gripper_control_mode(
+                oa.ControlMode.POS_FORCE
+            )
+
         self.openarm.set_callback_mode_all(oa.CallbackMode.STATE)
         self.openarm.enable_all()
         self.set_latest_state(timeout_us=500)

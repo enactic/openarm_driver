@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from types import SimpleNamespace
 
 import numpy as np
@@ -30,6 +31,12 @@ class MotorStub:
         self.torque = 0.0
         self.tmos = 25
         self.trotor = 30
+        # RID -> value. Pre-set to POS_FORCE so the driver's control mode
+        # verification sees a motor that accepted the mode.
+        self.params = {10: 4}
+
+    def get_param(self, rid):
+        return self.params.get(rid, -1)
 
     def get_position(self):
         return self.position
@@ -89,6 +96,50 @@ def test_start(can_mock):
 def test_stop(can_mock):
     driver = SingleArmDriver("right_arm")
     driver.stop()
+
+
+def test_gripper_mode_confirmed_on_first_attempt(can_mock):
+    driver = SingleArmDriver("right_arm")
+    driver.start()
+    assert driver.gripper_mode_verified
+
+
+def test_gripper_mode_retried_until_confirmed(can_mock):
+    driver = SingleArmDriver("right_arm")
+
+    # Report the wrong mode twice, as a motor does when the RAM-only CTRL_MODE
+    # write is lost, then accept it.
+    stub = driver.openarm.get_gripper().get_motors()[0]
+    remaining_failures = [2]
+    original = stub.get_param
+
+    def flaky_get_param(rid):
+        if remaining_failures[0] > 0:
+            remaining_failures[0] -= 1
+            return 1  # MIT
+        return original(rid)
+
+    stub.get_param = flaky_get_param
+
+    driver.start()
+    assert driver.gripper_mode_verified
+    assert remaining_failures[0] == 0
+
+
+def test_gripper_mode_failure_is_logged_and_start_continues(can_mock, caplog):
+    driver = SingleArmDriver("right_arm")
+
+    # A motor that never accepts the mode. Starting has to carry on: refusing to
+    # run would leave the arm unusable over a gripper that may not be needed.
+    stub = driver.openarm.get_gripper().get_motors()[0]
+    stub.get_param = lambda rid: 1  # MIT
+
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        driver.start()
+
+    assert not driver.gripper_mode_verified
+    assert driver.started
+    assert "gripper control mode could not be set" in caplog.text
 
 
 def test_fetch_position(can_mock):

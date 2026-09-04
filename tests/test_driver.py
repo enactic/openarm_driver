@@ -157,10 +157,9 @@ def test_pos_limit(can_mock):
     config = get_default_config()
     checker = JointPosChecker(config.get_joint_limits("right_arm"))
     driver = SingleArmDriver("right_arm", safety_checker=checker)
-    driver.send_position([1.0] * 8)
-    driver.send_position([2.0] * 8)
-    driver.send_position([3.0] * 8)
-    assert all(pos < 3.0 for pos in driver.fetch_position())
+    upper_limits = config.get_joint_limits("right_arm")[:, 1]
+    driver.send_position(upper_limits + 1.0)
+    np.testing.assert_allclose(driver.last_command, upper_limits)
 
 
 def test_delta_pos_limit(can_mock, config_mock_hard_delta_limit):

@@ -116,6 +116,7 @@ class SingleArmDriver:
             time.sleep(0.01)
             self.last_command = self.fetch_position(refresh=True)
         self.last_command_time_s = time.monotonic()
+        self.last_command_executed_timestamp_ns: int | None = None
 
     def start(self):
         """Start the arm."""
@@ -124,6 +125,7 @@ class SingleArmDriver:
         self.set_latest_state(timeout_us=500)
         self.openarm.refresh_all()
         self.set_latest_state(timeout_us=500)
+        self.last_command_executed_timestamp_ns = None
         self._on_start()
         self.started = True
 
@@ -185,8 +187,8 @@ class SingleArmDriver:
         """Fetch the rotor temperature for each motor."""
         return self.fetch_state(refresh=refresh)["trotor"]
 
-    def send_position(self, position: ArrayLike):
-        """Move the arm by sending the position."""
+    def send_position(self, position: ArrayLike) -> bool:
+        """Move the arm by sending the position and report whether it was sent."""
         command_time_s = time.monotonic()
         elapsed_s = max(command_time_s - self.last_command_time_s, 0.0)
         dt_s = min(elapsed_s, MAX_COMMAND_DT_S)
@@ -201,9 +203,10 @@ class SingleArmDriver:
             if checked_result.fixed_joint_positions is not None:
                 position = checked_result.fixed_joint_positions
 
-        target_pos = np.asarray(position, dtype=float)
+        target_pos = np.asarray(position, dtype=float).copy()
         self.last_command = target_pos
         self.last_command_time_s = command_time_s
+        self.last_command_executed_timestamp_ns = time.time_ns()
 
         self.openarm.get_arm().mit_control_all(
             [
@@ -226,6 +229,7 @@ class SingleArmDriver:
             )
 
         self.set_latest_state(timeout_us=300)
+        return True
 
     def smooth_move(
         self,

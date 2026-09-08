@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from types import SimpleNamespace
 
 import numpy as np
@@ -81,14 +82,32 @@ def config_mock_hard_delta_limit(monkeypatch):
     )
 
 
-def test_start(can_mock):
+def test_start_syncs_command_to_measured_position(can_mock):
     driver = SingleArmDriver("right_arm")
+    assert driver.last_command_dispatch_timestamp_ns is None
+    driver.last_command_dispatch_timestamp_ns = 123
+    driver._on_start = lambda: None
+
     driver.start()
 
+    assert driver.last_command_dispatch_timestamp_ns is None
+    np.testing.assert_allclose(driver.last_command, driver.latest_state["qpos"])
+    assert driver.started
 
-def test_stop(can_mock):
+
+def test_stop_skips_motion_after_safety_stop(can_mock, monkeypatch):
     driver = SingleArmDriver("right_arm")
+    disable_calls = []
+    driver.started = True
+    driver._safety_stop_reason = "test safety stop"
+    driver._on_stop = lambda: pytest.fail("stop trajectory should be skipped")
+    driver.openarm.disable_all = lambda: disable_calls.append(True)
+    monkeypatch.setattr("openarm_driver.driver.time.sleep", lambda _: None)
+
     driver.stop()
+
+    assert not driver.started
+    assert disable_calls == [True]
 
 
 def test_fetch_position(can_mock):
@@ -135,17 +154,43 @@ def test_send_position(can_mock, monkeypatch):
         "openarm_driver.driver.time.monotonic",
         lambda: next(command_times),
     )
+    monkeypatch.setattr("openarm_driver.driver.time.time_ns", lambda: 123)
     driver = SingleArmDriver("right_arm")
     driver.last_command = np.zeros(8)
     requested = np.full(8, 0.01)
+    expected = requested.copy()
 
-    driver.send_position(requested)
+    sent = driver.send_position(requested)
+    requested.fill(1.0)
 
-    np.testing.assert_allclose(driver.last_command, requested)
+    assert sent
+    np.testing.assert_allclose(driver.last_command, expected)
+    assert driver.last_command_dispatch_timestamp_ns == 123
     np.testing.assert_allclose(
         driver.latest_state["qpos"][: driver.num_mit_motors],
-        requested[: driver.num_mit_motors],
+        expected[: driver.num_mit_motors],
     )
+
+
+def test_send_position_does_not_update_state_on_dispatch_error(can_mock, monkeypatch):
+    driver = SingleArmDriver("right_arm")
+    driver.last_command = np.zeros(8)
+    driver.last_command_time_s = 1.0
+    driver.last_command_dispatch_timestamp_ns = 123
+    monkeypatch.setattr("openarm_driver.driver.time.monotonic", lambda: 1.01)
+    monkeypatch.setattr("openarm_driver.driver.time.time_ns", lambda: 456)
+
+    def fail_dispatch(_):
+        raise RuntimeError("dispatch failed")
+
+    driver.openarm.mit_control_all = fail_dispatch
+
+    with pytest.raises(RuntimeError, match="dispatch failed"):
+        driver.send_position(np.full(8, 0.01))
+
+    np.testing.assert_allclose(driver.last_command, np.zeros(8))
+    assert driver.last_command_time_s == 1.0
+    assert driver.last_command_dispatch_timestamp_ns == 123
 
 
 def test_smooth_move(can_mock):
@@ -162,10 +207,22 @@ def test_pos_limit(can_mock):
     np.testing.assert_allclose(driver.last_command, upper_limits)
 
 
-def test_delta_pos_limit(can_mock, config_mock_hard_delta_limit):
+def test_delta_pos_limit(can_mock, config_mock_hard_delta_limit, caplog, monkeypatch):
     driver = SingleArmDriver("right_arm")
-    with pytest.raises(RuntimeError):
-        driver.send_position([3.0] * 8)
+    previous = driver.last_command.copy()
+    command_times = iter([0.0, 1.0, 2.0])
+    monkeypatch.setattr(
+        "openarm_driver.driver.time.monotonic",
+        lambda: next(command_times),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        results = [driver.send_position([3.0] * 8) for _ in range(3)]
+
+    assert results == [False, False, False]
+    assert driver._safety_stop_reason is not None
+    np.testing.assert_allclose(driver.last_command, previous)
+    assert sum("Safety stop" in record.message for record in caplog.records) == 2
 
 
 def test_velocity_limit():
@@ -226,4 +283,4 @@ def test_driver_caps_command_dt(can_mock, monkeypatch):
     driver = SingleArmDriver("right_arm", safety_checker=checker)
     driver.send_position(driver.last_command)
 
-    assert checker.dt_s == pytest.approx(0.1)
+    assert checker.dt_s == pytest.approx(0.04)

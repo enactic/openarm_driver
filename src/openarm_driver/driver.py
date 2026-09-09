@@ -115,7 +115,9 @@ class SingleArmDriver:
         for _ in range(20):
             time.sleep(0.01)
             self.last_command = self.fetch_position(refresh=True)
+        # Monotonic time drives rate limits; wall time correlates external events.
         self.last_command_time_s = time.monotonic()
+        self.last_command_dispatch_timestamp_ns: int | None = None
 
     def start(self):
         """Start the arm."""
@@ -124,6 +126,8 @@ class SingleArmDriver:
         self.set_latest_state(timeout_us=500)
         self.openarm.refresh_all()
         self.set_latest_state(timeout_us=500)
+        # Do not expose command metadata from a previous enable session.
+        self.last_command_dispatch_timestamp_ns = None
         self._on_start()
         self.started = True
 
@@ -185,8 +189,8 @@ class SingleArmDriver:
         """Fetch the rotor temperature for each motor."""
         return self.fetch_state(refresh=refresh)["trotor"]
 
-    def send_position(self, position: ArrayLike):
-        """Move the arm by sending the position."""
+    def send_position(self, position: ArrayLike) -> None:
+        """Move the arm by dispatching a checked position target."""
         command_time_s = time.monotonic()
         elapsed_s = max(command_time_s - self.last_command_time_s, 0.0)
         dt_s = min(elapsed_s, MAX_COMMAND_DT_S)
@@ -201,22 +205,19 @@ class SingleArmDriver:
             if checked_result.fixed_joint_positions is not None:
                 position = checked_result.fixed_joint_positions
 
-        target_pos = np.asarray(position, dtype=float)
-        self.last_command = target_pos
-        self.last_command_time_s = command_time_s
-
-        self.openarm.get_arm().mit_control_all(
-            [
-                oa.MITParam(
-                    self.kps[i],
-                    self.kds[i],
-                    target_pos[i] + self.joint_offsets[i],
-                    0,
-                    0,
-                )
-                for i in range(self.num_mit_motors)
-            ]
-        )
+        target_pos = np.array(position, dtype=float)
+        mit_params = [
+            oa.MITParam(
+                self.kps[i],
+                self.kds[i],
+                target_pos[i] + self.joint_offsets[i],
+                0,
+                0,
+            )
+            for i in range(self.num_mit_motors)
+        ]
+        dispatch_timestamp_ns = time.time_ns()
+        self.openarm.get_arm().mit_control_all(mit_params)
         if self.gripper_posforce:
             # TODO: Now We should multiply 10 to convert Nm to pu?
             self.openarm.get_gripper().set_position(
@@ -225,6 +226,9 @@ class SingleArmDriver:
                 torque_pu=self.gripper_posforce_limits[1] / 4.5,
             )
 
+        self.last_command = target_pos
+        self.last_command_time_s = command_time_s
+        self.last_command_dispatch_timestamp_ns = dispatch_timestamp_ns
         self.set_latest_state(timeout_us=300)
 
     def smooth_move(

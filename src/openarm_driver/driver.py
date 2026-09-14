@@ -259,6 +259,40 @@ class SingleArmDriver:
         time.sleep(1)
         self.started = False
 
+    def get_health(self) -> tuple[list[str], dict]:
+        """Return the current per-axis status and bus state.
+
+        For callers outside this class (e.g. a dora node publishing it
+        alongside qpos) that want the current picture rather than a log line.
+        Axis silence is read from the same tracking `_log_health_if_changed`
+        already maintains rather than recomputed here, so this never
+        disagrees with what was just logged -- and a caller does not need to
+        know about openarm_can's API to get it, only this method's.
+
+        Returns:
+            (motor_status, bus): `motor_status` has one entry per axis, in
+            qpos order (joints, then gripper) -- the motor's own status name,
+            or "SILENT" if it has stopped answering. `bus` has `carrier`
+            (bool) plus a count for each fault class in `_BUS_COUNTER_NAMES`.
+            ([], {}) if the installed openarm_can doesn't expose these.
+
+        """
+        if not self._health_reporting:
+            return [], {}
+        motor_status = []
+        for idx, (_, ci, i) in enumerate(self._health_axes):
+            if self._axis_was_stale[idx]:
+                motor_status.append("SILENT")
+                continue
+            motor = self._health_collections[ci].get_motors()[i]
+            motor_status.append(oa.motor_error_to_string(motor.get_error_code()))
+
+        bus = self.openarm.get_bus_status()
+        bus_state = {"carrier": not self._link_was_down}
+        for name in _BUS_COUNTER_NAMES:
+            bus_state[name] = getattr(bus, name).count
+        return motor_status, bus_state
+
     # Detection only. These report what openarm_can already knows about the
     # bus and each motor; whether a given fault should stop the arm depends on
     # context this class cannot see, so that decision is left to the caller.

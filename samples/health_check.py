@@ -19,7 +19,7 @@ removing a terminator can be watched as it happens. The driver logs bus and
 per-axis faults as they change, and those lines appear interleaved with the
 table below.
 
-    uv run --no-sync samples/health_check.py right_arm -i can0
+    uv run samples/health_check.py right_arm -i can0
 
 Torque stays off unless --start is passed: polling the motors works whether or
 not they are armed, so the arm cannot move on its own while this runs.

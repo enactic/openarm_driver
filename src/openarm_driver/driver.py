@@ -40,6 +40,13 @@ MAX_COMMAND_DT_S = 0.1
 # arm is driven, so it should not fire on an ordinary single missed frame.
 AXIS_STALE_TIMEOUT_S = 0.2
 
+# Shortest gap between two health checks. set_latest_state runs every
+# control cycle, and reading the diagnostics costs about as much as the rest
+# of that function; at this interval the cost is negligible and the delay is
+# still far below AXIS_STALE_TIMEOUT_S, which is what decides when anything
+# is reported.
+HEALTH_CHECK_INTERVAL_S = 0.02
+
 # Shortest gap between two reports of the same bus counter. Counters that
 # advance once per failed frame would otherwise produce a line per frame for
 # as long as the fault lasts.
@@ -222,6 +229,7 @@ class SingleArmDriver:
         self._bus_counter_log = _IncrementReporter(FAULT_LOG_COOLDOWN_S)
         self._unmatched_log = _IncrementReporter(FAULT_LOG_COOLDOWN_S)
         self._link_was_down = False
+        self._health_checked_at = 0.0
 
         # iterate until commutation is stable
         for _ in range(20):
@@ -262,10 +270,14 @@ class SingleArmDriver:
     def _log_health_if_changed(self):
         if not self._health_reporting:
             return
+        # One clock reading for the whole report, so the bus and the axes are
+        # judged against the same instant, and so the throttle below costs a
+        # single call rather than a second one.
+        now = time.monotonic()
+        if now - self._health_checked_at < HEALTH_CHECK_INTERVAL_S:
+            return
+        self._health_checked_at = now
         try:
-            # One clock reading for the whole report, so the bus and the axes
-            # are judged against the same instant.
-            now = time.monotonic()
             self._log_bus_health(now)
             self._log_axis_health(now)
         except Exception:

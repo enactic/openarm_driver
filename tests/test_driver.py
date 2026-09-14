@@ -351,6 +351,7 @@ def make_health_driver(openarm, collections=(), axes=()):
         driver_module.FAULT_LOG_COOLDOWN_S
     )
     driver._link_was_down = False
+    driver._health_checked_at = 0.0
     return driver
 
 
@@ -559,8 +560,8 @@ def test_can_interface_defaults_to_config(can_mock):
 
 
 def test_can_interface_can_be_overridden(can_mock):
-    driver = SingleArmDriver("right_arm", can_interface="can_arm_right")
-    assert driver.can_interface == "can_arm_right"
+    driver = SingleArmDriver("right_arm", can_interface="can0")
+    assert driver.can_interface == "can0"
 
 
 def test_repeating_counter_is_reported_once_then_summarised(caplog, monkeypatch):

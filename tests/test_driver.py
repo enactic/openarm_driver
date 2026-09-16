@@ -32,6 +32,8 @@ class MotorStub:
         self.torque = 0.0
         self.tmos = 25
         self.trotor = 30
+        self.error = False
+        self.code = 0
 
     def get_position(self):
         return self.position
@@ -48,10 +50,55 @@ class MotorStub:
     def get_state_trotor(self):
         return self.trotor
 
+    def has_error(self):
+        return self.error
+
+    def get_error_code(self):
+        return self.code
+
+
+class CounterFake:
+    def __init__(self, count=0, ago=1.0):
+        self.count = count
+        self._ago = ago
+
+    def seconds_ago(self):
+        return self._ago
+
+
+class BusFake:
+    def __init__(self):
+        for name in driver_module._BUS_COUNTER_NAMES:
+            setattr(self, name, CounterFake())
+
+
+class LinkStatsFake:
+    def __init__(self, responses=0, commands_sent=0):
+        self.responses = responses
+        self.commands_sent = commands_sent
+
+    def ask(self, answered=True):
+        """Record one command, and its reply unless the axis is silent."""
+        self.commands_sent += 1
+        if answered:
+            self.responses += 1
+
 
 class CanMock:
+    """Stands in for openarm_can.OpenArm and the collections it hands out.
+
+    Calls whose result the driver never looks at (enable_all, recv_all, ...)
+    fall through __getattr__ and return the mock itself. Anything whose
+    return value the driver reads is implemented explicitly, so a value
+    that is compared or indexed is a real one rather than the mock.
+    """
+
     def __init__(self, *args, **kwargs):
         self.motors = []
+        self.links = []
+        self.bus = BusFake()
+        self.link_running = True
+        self.unmatched = {}
 
     def __getattr__(self, name):
         return self
@@ -60,10 +107,23 @@ class CanMock:
         return self
 
     def init_arm_motors(self, motor_types, *args):
-        self.motors = [MotorStub() for _ in range(len(motor_types))]
+        self.motors = [MotorStub() for _ in motor_types]
+        self.links = [LinkStatsFake() for _ in motor_types]
 
     def get_motors(self):
         return self.motors
+
+    def get_link_stats(self, i):
+        return self.links[i]
+
+    def get_bus_status(self):
+        return self.bus
+
+    def is_link_running(self):
+        return self.link_running
+
+    def get_unmatched_frames(self):
+        return self.unmatched
 
     def mit_control_all(self, mit_params):
         for motor, mit_param in zip(self.motors, mit_params):
@@ -264,45 +324,6 @@ def test_driver_caps_command_dt(can_mock, monkeypatch):
 # diagnostics, and would pay the commutation-settling loop for every case.
 
 
-class CounterFake:
-    def __init__(self, count=0, ago=1.0):
-        self.count = count
-        self._ago = ago
-
-    def seconds_ago(self):
-        return self._ago
-
-
-class BusFake:
-    def __init__(self):
-        for name in driver_module._BUS_COUNTER_NAMES:
-            setattr(self, name, CounterFake())
-
-
-class LinkStatsFake:
-    def __init__(self, responses=0, commands_sent=0):
-        self.responses = responses
-        self.commands_sent = commands_sent
-
-    def ask(self, answered=True):
-        """Record one command, and its reply unless the axis is silent."""
-        self.commands_sent += 1
-        if answered:
-            self.responses += 1
-
-
-class MotorFake:
-    def __init__(self, has_error=False, code=0):
-        self.error = has_error
-        self.code = code
-
-    def has_error(self):
-        return self.error
-
-    def get_error_code(self):
-        return self.code
-
-
 class CollectionFake:
     def __init__(self, link, motor):
         self.link = link
@@ -415,7 +436,7 @@ def test_axis_silence_reported_only_after_the_timeout(caplog, monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(driver_module.time, "monotonic", lambda: clock[0])
     link = LinkStatsFake()
-    collection = CollectionFake(link, MotorFake())
+    collection = CollectionFake(link, MotorStub())
     driver = make_health_driver(
         OpenArmFake(BusFake()), collections=[collection], axes=[("arm[0]", 0, 0)]
     )
@@ -465,7 +486,7 @@ def test_axis_not_addressed_is_not_called_silent(caplog, monkeypatch):
     clock = [100.0]
     monkeypatch.setattr(driver_module.time, "monotonic", lambda: clock[0])
     link = LinkStatsFake()
-    collection = CollectionFake(link, MotorFake())
+    collection = CollectionFake(link, MotorStub())
     driver = make_health_driver(
         OpenArmFake(BusFake()), collections=[collection], axes=[("arm[0]", 0, 0)]
     )
@@ -487,7 +508,7 @@ def test_motor_fault_named_in_log_and_cleared(caplog, monkeypatch):
         lambda code: "OVERCURRENT" if code == 0xA else "UNKNOWN",
         raising=False,
     )
-    motor = MotorFake(has_error=False)
+    motor = MotorStub()
     collection = CollectionFake(LinkStatsFake(), motor)
     driver = make_health_driver(
         OpenArmFake(BusFake()), collections=[collection], axes=[("arm[0]", 0, 0)]
@@ -511,10 +532,10 @@ def test_motor_fault_named_in_log_and_cleared(caplog, monkeypatch):
 
 
 def test_reporting_failure_does_not_propagate(caplog):
-    # CanMock answers every attribute access with itself, so the counter
-    # comparisons raise. Reporting is diagnostic, and must not take
-    # set_latest_state down with it.
-    driver = make_health_driver(CanMock())
+    # A bus status with no counters on it makes the attribute reads raise.
+    # Reporting is diagnostic, and must not take set_latest_state down with
+    # it.
+    driver = make_health_driver(OpenArmFake(bus=None))
 
     with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
         driver._log_health_if_changed()
@@ -525,7 +546,7 @@ def test_reporting_failure_does_not_propagate(caplog):
 def test_reporting_gives_up_after_a_failure(caplog):
     # The failure is structural, so retrying it every cycle would repeat the
     # same traceback at loop rate without ever succeeding.
-    driver = make_health_driver(CanMock())
+    driver = make_health_driver(OpenArmFake(bus=None))
 
     driver._log_health_if_changed()
     assert not driver._health_reporting
@@ -544,14 +565,21 @@ def test_reporting_skipped_when_openarm_can_lacks_it():
     driver._log_health_if_changed()
 
 
-def test_state_update_reports_health(can_mock, monkeypatch):
+def test_state_update_reports_health(can_mock, caplog, monkeypatch):
+    # Through the public entry point, with the driver built normally: a
+    # fault that openarm_can starts reporting shows up in the log on the
+    # next state update.
+    clock = [100.0]
+    monkeypatch.setattr(driver_module.time, "monotonic", lambda: clock[0])
     driver = SingleArmDriver("right_arm")
-    calls = []
-    monkeypatch.setattr(driver, "_log_health_if_changed", lambda: calls.append(True))
 
-    driver.set_latest_state()
+    # Past the check interval, so the fault is not hidden by the throttle.
+    clock[0] += driver_module.HEALTH_CHECK_INTERVAL_S * 2
+    driver.openarm.bus.bus_off.count = 1
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        driver.fetch_state()
 
-    assert calls, "set_latest_state must report health"
+    assert any("bus_off" in r.getMessage() for r in caplog.records)
 
 
 def test_can_interface_defaults_to_config(can_mock):

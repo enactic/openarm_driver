@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from openarm_driver import driver as driver_module
 from openarm_driver.base_safety import CheckResult
 from openarm_driver.config import get_default_config
 from openarm_driver.driver import SingleArmDriver
@@ -30,6 +32,8 @@ class MotorStub:
         self.torque = 0.0
         self.tmos = 25
         self.trotor = 30
+        self.error = False
+        self.code = 0
 
     def get_position(self):
         return self.position
@@ -46,10 +50,55 @@ class MotorStub:
     def get_state_trotor(self):
         return self.trotor
 
+    def has_error(self):
+        return self.error
+
+    def get_error_code(self):
+        return self.code
+
+
+class CounterFake:
+    def __init__(self, count=0, ago=1.0):
+        self.count = count
+        self._ago = ago
+
+    def seconds_ago(self):
+        return self._ago
+
+
+class BusFake:
+    def __init__(self):
+        for name in driver_module._BUS_COUNTER_NAMES:
+            setattr(self, name, CounterFake())
+
+
+class LinkStatsFake:
+    def __init__(self, responses=0, commands_sent=0):
+        self.responses = responses
+        self.commands_sent = commands_sent
+
+    def ask(self, answered=True):
+        """Record one command, and its reply unless the axis is silent."""
+        self.commands_sent += 1
+        if answered:
+            self.responses += 1
+
 
 class CanMock:
+    """Stands in for openarm_can.OpenArm and the collections it hands out.
+
+    Calls whose result the driver never looks at (enable_all, recv_all, ...)
+    fall through __getattr__ and return the mock itself. Anything whose
+    return value the driver reads is implemented explicitly, so a value
+    that is compared or indexed is a real one rather than the mock.
+    """
+
     def __init__(self, *args, **kwargs):
         self.motors = []
+        self.links = []
+        self.bus = BusFake()
+        self.link_running = True
+        self.unmatched = {}
 
     def __getattr__(self, name):
         return self
@@ -58,10 +107,23 @@ class CanMock:
         return self
 
     def init_arm_motors(self, motor_types, *args):
-        self.motors = [MotorStub() for _ in range(len(motor_types))]
+        self.motors = [MotorStub() for _ in motor_types]
+        self.links = [LinkStatsFake() for _ in motor_types]
 
     def get_motors(self):
         return self.motors
+
+    def get_link_stats(self, i):
+        return self.links[i]
+
+    def get_bus_status(self):
+        return self.bus
+
+    def is_link_running(self):
+        return self.link_running
+
+    def get_unmatched_frames(self):
+        return self.unmatched
 
     def mit_control_all(self, mit_params):
         for motor, mit_param in zip(self.motors, mit_params):
@@ -137,14 +199,11 @@ def test_fetch_state(can_mock):
 
 
 def test_send_position(can_mock, monkeypatch):
-    command_times = iter([1.0, 1.01])
-    monkeypatch.setattr(
-        "openarm_driver.driver.time.monotonic",
-        lambda: next(command_times),
-    )
+    monkeypatch.setattr("openarm_driver.driver.time.monotonic", lambda: 1.01)
     monkeypatch.setattr("openarm_driver.driver.time.time_ns", lambda: 123)
     driver = SingleArmDriver("right_arm")
     driver.last_command = np.zeros(8)
+    driver.last_command_time_s = 1.0
     requested = np.full(8, 0.01)
     expected = requested.copy()
 
@@ -243,11 +302,7 @@ def test_velocity_limit_rejects_invalid_dt(dt_s):
 
 
 def test_driver_caps_command_dt(can_mock, monkeypatch):
-    command_times = iter([1.0, 2.0])
-    monkeypatch.setattr(
-        "openarm_driver.driver.time.monotonic",
-        lambda: next(command_times),
-    )
+    monkeypatch.setattr("openarm_driver.driver.time.monotonic", lambda: 2.0)
 
     class RecordingChecker:
         def check(self, joint_positions, **kwargs):
@@ -256,6 +311,314 @@ def test_driver_caps_command_dt(can_mock, monkeypatch):
 
     checker = RecordingChecker()
     driver = SingleArmDriver("right_arm", safety_checker=checker)
+    driver.last_command_time_s = 1.0
     driver.send_position(driver.last_command)
 
     assert checker.dt_s == pytest.approx(0.1)
+
+
+# --- bus and per-axis health reporting -------------------------------------
+#
+# These drive the private reporting helpers directly. Going through
+# SingleArmDriver.__init__ would need an openarm_can new enough to expose the
+# diagnostics, and would pay the commutation-settling loop for every case.
+
+
+class CollectionFake:
+    def __init__(self, link, motor):
+        self.link = link
+        self.motor = motor
+
+    def get_link_stats(self, i):
+        return self.link
+
+    def get_motors(self):
+        return [self.motor]
+
+
+class OpenArmFake:
+    def __init__(self, bus, link_running=True, unmatched=None):
+        self.bus = bus
+        self.link_running = link_running
+        self.unmatched = unmatched if unmatched is not None else {}
+
+    def get_bus_status(self):
+        return self.bus
+
+    def is_link_running(self):
+        return self.link_running
+
+    def get_unmatched_frames(self):
+        return self.unmatched
+
+
+def make_health_driver(openarm, collections=(), axes=()):
+    driver = SingleArmDriver.__new__(SingleArmDriver)
+    driver.arm_side = "right_arm"
+    driver.can_interface = "can0"
+    driver.openarm = openarm
+    driver._health_reporting = True
+    driver._health_collections = list(collections)
+    driver._health_axes = list(axes)
+    driver._axis_was_stale = [False] * len(driver._health_axes)
+    driver._axis_had_error = [False] * len(driver._health_axes)
+    driver._axis_last_sent = [0] * len(driver._health_axes)
+    driver._axis_last_recv = [0] * len(driver._health_axes)
+    driver._axis_unanswered_since = [None] * len(driver._health_axes)
+    driver._bus_counter_log = driver_module._IncrementReporter(
+        driver_module.FAULT_LOG_COOLDOWN_S
+    )
+    driver._unmatched_log = driver_module._IncrementReporter(
+        driver_module.FAULT_LOG_COOLDOWN_S
+    )
+    driver._link_was_down = False
+    driver._health_checked_at = 0.0
+    return driver
+
+
+def test_bus_counter_logs_once_per_increment(caplog):
+    bus = BusFake()
+    driver = make_health_driver(OpenArmFake(bus))
+
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        driver._log_bus_health(0.0)
+    assert caplog.records == []
+
+    bus.bus_off.count = 1
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        driver._log_bus_health(1.0)
+    assert any("bus_off" in r.getMessage() for r in caplog.records)
+
+    # A latched counter that has not moved must not be reported again; at
+    # control-loop rates that would be one line per cycle forever. Well past
+    # the cooldown, so silence here is about the count, not the rate limit.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        driver._log_bus_health(1.0 + driver_module.FAULT_LOG_COOLDOWN_S * 2)
+    assert caplog.records == []
+
+
+def test_carrier_loss_and_recovery_each_log_once(caplog):
+    openarm = OpenArmFake(BusFake(), link_running=False)
+    driver = make_health_driver(openarm)
+
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_bus_health(0.0)
+    assert any("lost carrier" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_bus_health(1.0)
+    assert caplog.records == []
+
+    openarm.link_running = True
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_bus_health(2.0)
+    assert any("carrier restored" in r.getMessage() for r in caplog.records)
+
+
+def test_unmatched_frame_reports_only_new_ones(caplog):
+    unmatched = {0x00: 3}
+    driver = make_health_driver(OpenArmFake(BusFake(), unmatched=unmatched))
+
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        driver._log_bus_health(0.0)
+    assert any("0x00" in r.getMessage() for r in caplog.records)
+
+    # Past the cooldown, so silence means the count did not move.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        driver._log_bus_health(driver_module.FAULT_LOG_COOLDOWN_S * 2)
+    assert caplog.records == []
+
+
+def test_axis_silence_reported_only_after_the_timeout(caplog, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(driver_module.time, "monotonic", lambda: clock[0])
+    link = LinkStatsFake()
+    collection = CollectionFake(link, MotorStub())
+    driver = make_health_driver(
+        OpenArmFake(BusFake()), collections=[collection], axes=[("arm[0]", 0, 0)]
+    )
+
+    # Answered: healthy, nothing to say.
+    link.ask(answered=True)
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_axis_health(clock[0])
+    assert caplog.records == []
+
+    # First unanswered command only starts the clock. Reporting here is what
+    # made every axis look silent on the very first cycle.
+    link.ask(answered=False)
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_axis_health(clock[0])
+    assert caplog.records == []
+
+    # Still inside the timeout.
+    clock[0] += driver_module.AXIS_STALE_TIMEOUT_S / 2
+    link.ask(answered=False)
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_axis_health(clock[0])
+    assert caplog.records == []
+
+    clock[0] += driver_module.AXIS_STALE_TIMEOUT_S
+    link.ask(answered=False)
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_axis_health(clock[0])
+    assert any("went silent" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+    clock[0] += 1.0
+    link.ask(answered=False)
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_axis_health(clock[0])
+    assert caplog.records == []
+
+    link.ask(answered=True)
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_axis_health(clock[0])
+    assert any("responding again" in r.getMessage() for r in caplog.records)
+
+
+def test_axis_not_addressed_is_not_called_silent(caplog, monkeypatch):
+    # Polling without sending anything -- fetch_state(refresh=False) in a
+    # loop -- must not be read as the motor having gone quiet.
+    clock = [100.0]
+    monkeypatch.setattr(driver_module.time, "monotonic", lambda: clock[0])
+    link = LinkStatsFake()
+    collection = CollectionFake(link, MotorStub())
+    driver = make_health_driver(
+        OpenArmFake(BusFake()), collections=[collection], axes=[("arm[0]", 0, 0)]
+    )
+    link.ask(answered=True)
+    driver._log_axis_health(clock[0])
+
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        for _ in range(5):
+            clock[0] += driver_module.AXIS_STALE_TIMEOUT_S
+            driver._log_axis_health(clock[0])
+
+    assert caplog.records == []
+
+
+def test_motor_fault_named_in_log_and_cleared(caplog, monkeypatch):
+    monkeypatch.setattr(
+        driver_module.oa,
+        "motor_error_to_string",
+        lambda code: "OVERCURRENT" if code == 0xA else "UNKNOWN",
+        raising=False,
+    )
+    motor = MotorStub()
+    collection = CollectionFake(LinkStatsFake(), motor)
+    driver = make_health_driver(
+        OpenArmFake(BusFake()), collections=[collection], axes=[("arm[0]", 0, 0)]
+    )
+
+    motor.error = True
+    motor.code = 0xA
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_axis_health(0.0)
+    assert any("OVERCURRENT" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_axis_health(1.0)
+    assert caplog.records == []
+
+    motor.error = False
+    with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
+        driver._log_axis_health(2.0)
+    assert any("error cleared" in r.getMessage() for r in caplog.records)
+
+
+def test_reporting_failure_does_not_propagate(caplog):
+    # A bus status with no counters on it makes the attribute reads raise.
+    # Reporting is diagnostic, and must not take set_latest_state down with
+    # it.
+    driver = make_health_driver(OpenArmFake(bus=None))
+
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        driver._log_health_if_changed()
+
+    assert any("diagnostics disabled" in r.getMessage() for r in caplog.records)
+
+
+def test_reporting_gives_up_after_a_failure(caplog):
+    # The failure is structural, so retrying it every cycle would repeat the
+    # same traceback at loop rate without ever succeeding.
+    driver = make_health_driver(OpenArmFake(bus=None))
+
+    driver._log_health_if_changed()
+    assert not driver._health_reporting
+
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="openarm_driver.driver"):
+        driver._log_health_if_changed()
+    assert caplog.records == []
+
+
+def test_reporting_skipped_when_openarm_can_lacks_it():
+    driver = make_health_driver(OpenArmFake(BusFake()))
+    driver._health_reporting = False
+    driver.openarm = None  # would raise if it were consulted
+
+    driver._log_health_if_changed()
+
+
+def test_state_update_reports_health(can_mock, caplog, monkeypatch):
+    # Through the public entry point, with the driver built normally: a
+    # fault that openarm_can starts reporting shows up in the log on the
+    # next state update.
+    clock = [100.0]
+    monkeypatch.setattr(driver_module.time, "monotonic", lambda: clock[0])
+    driver = SingleArmDriver("right_arm")
+
+    # Past the check interval, so the fault is not hidden by the throttle.
+    clock[0] += driver_module.HEALTH_CHECK_INTERVAL_S * 2
+    driver.openarm.bus.bus_off.count = 1
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        driver.fetch_state()
+
+    assert any("bus_off" in r.getMessage() for r in caplog.records)
+
+
+def test_can_interface_defaults_to_config(can_mock):
+    driver = SingleArmDriver("right_arm")
+    assert driver.can_interface == get_default_config().get_can_interface("right_arm")
+
+
+def test_can_interface_can_be_overridden(can_mock):
+    driver = SingleArmDriver("right_arm", can_interface="can0")
+    assert driver.can_interface == "can0"
+
+
+def test_repeating_counter_is_reported_once_then_summarised(caplog, monkeypatch):
+    # write_other advances once per failed frame, so an interface that is down
+    # moves it several times per cycle. Reporting each increment buried the
+    # rest of the log under one line per frame.
+    clock = [100.0]
+    monkeypatch.setattr(driver_module.time, "monotonic", lambda: clock[0])
+    bus = BusFake()
+    driver = make_health_driver(OpenArmFake(bus))
+
+    bus.write_other.count = 8
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        driver._log_bus_health(clock[0])
+    assert sum("write_other" in r.getMessage() for r in caplog.records) == 1
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        for _ in range(50):
+            clock[0] += 0.01
+            bus.write_other.count += 8
+            driver._log_bus_health(clock[0])
+    assert caplog.records == []
+
+    # Suppressed increments accumulate rather than being lost.
+    clock[0] += driver_module.FAULT_LOG_COOLDOWN_S
+    bus.write_other.count += 8
+    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
+        driver._log_bus_health(clock[0])
+    assert any("+408" in r.getMessage() for r in caplog.records), [
+        r.getMessage() for r in caplog.records
+    ]

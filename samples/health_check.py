@@ -84,11 +84,11 @@ def iter_axes(driver):
         yield "gripper", driver.openarm.get_gripper(), 0
 
 
-def print_axes(driver, diagnostics):
-    header = f"  {'axis':<10}{'pos(rad)':>10}{'MOS':>5}{'Rtr':>5}"
-    if diagnostics:
-        header += f"  {'status':<20}{'recv/sent':>12}{'miss':>8}"
-    print(header)
+def print_axes(driver):
+    print(
+        f"  {'axis':<10}{'pos(rad)':>10}{'MOS':>5}{'Rtr':>5}"
+        f"  {'status':<20}{'recv/sent':>12}{'miss':>8}"
+    )
 
     motors_per_collection = {}
     for label, collection, i in iter_axes(driver):
@@ -100,18 +100,17 @@ def print_axes(driver, diagnostics):
             f"  {label:<10}{motor.get_position():>10.4f}"
             f"{motor.get_state_tmos():>5}{motor.get_state_trotor():>5}"
         )
-        if diagnostics:
-            link = collection.get_link_stats(i)
-            note = ""
-            if not link.ever_responded():
-                note = "  <-- never answered"
-            elif motor.has_error():
-                note = "  <-- FAULT"
-            row += (
-                f"  {oa.motor_error_to_string(motor.get_error_code()):<20}"
-                f"{link.responses:>6}/{link.commands_sent:<5}"
-                f"{link.miss_rate() * 100:>7.1f}%{note}"
-            )
+        link = collection.get_link_stats(i)
+        note = ""
+        if not link.ever_responded():
+            note = "  <-- never answered"
+        elif motor.has_error():
+            note = "  <-- FAULT"
+        row += (
+            f"  {oa.motor_error_to_string(motor.get_error_code()):<20}"
+            f"{link.responses:>6}/{link.commands_sent:<5}"
+            f"{link.miss_rate() * 100:>7.1f}%{note}"
+        )
         print(row)
 
 
@@ -143,11 +142,6 @@ def main() -> int:
     print(f">>> opening {args.arm_side}")
     driver = SingleArmDriver(args.arm_side, can_interface=args.can_interface)
     print(f"    interface  : {driver.can_interface}")
-    if not driver._health_reporting:
-        print(
-            "    diagnostics: UNAVAILABLE -- the installed openarm_can does not\n"
-            "                 expose them, so only positions are shown below"
-        )
 
     if args.start:
         print(">>> start: arming motors and running the configured moves")
@@ -158,9 +152,8 @@ def main() -> int:
         while time.monotonic() < deadline:
             driver.fetch_state(refresh=True)
             print(f"\n=== {driver.can_interface} ===")
-            print_axes(driver, driver._health_reporting)
-            if driver._health_reporting:
-                print_bus(driver)
+            print_axes(driver)
+            print_bus(driver)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         print("\n>>> interrupted")

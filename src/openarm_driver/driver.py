@@ -185,36 +185,17 @@ class SingleArmDriver:
             else safety_checker
         )
 
-        # Bus and per-axis diagnostics are newer than the oldest openarm_can
-        # this package accepts, so they are used only when present. Checked
-        # once here rather than per cycle: without them there is nothing to
-        # report, and the control loop should not pay for finding that out
-        # several hundred times a second.
-        self._health_reporting = hasattr(self.openarm, "get_bus_status") and hasattr(
-            oa, "motor_error_to_string"
-        )
-        if self._health_reporting:
-            # get_arm()/get_gripper() return references to the same underlying
-            # collections for the life of self.openarm, so these are resolved
-            # once. Axes carry an index into _health_collections rather than
-            # the collection itself, so that the motor list of each can be
-            # fetched once per cycle instead of once per axis. The per-axis
-            # history below is indexed the same way as _health_axes.
-            self._health_collections = [self.openarm.get_arm()]
-            self._health_axes = [
-                (f"arm[{i}]", 0, i) for i in range(self.num_mit_motors)
-            ]
-            if self.gripper_posforce:
-                self._health_collections.append(self.openarm.get_gripper())
-                self._health_axes.append(("gripper", 1, 0))
-        else:
-            logger.info(
-                "%s: bus and per-axis diagnostics unavailable; the installed "
-                "openarm_can does not expose them",
-                self.arm_side,
-            )
-            self._health_collections = []
-            self._health_axes = []
+        # get_arm()/get_gripper() return references to the same underlying
+        # collections for the life of self.openarm, so these are resolved
+        # once. Axes carry an index into _health_collections rather than the
+        # collection itself, so that the motor list of each can be fetched
+        # once per cycle instead of once per axis. The per-axis history below
+        # is indexed the same way as _health_axes.
+        self._health_collections = [self.openarm.get_arm()]
+        self._health_axes = [(f"arm[{i}]", 0, i) for i in range(self.num_mit_motors)]
+        if self.gripper_posforce:
+            self._health_collections.append(self.openarm.get_gripper())
+            self._health_axes.append(("gripper", 1, 0))
         self._axis_was_stale = [False] * len(self._health_axes)
         self._axis_had_error = [False] * len(self._health_axes)
         # Delivery counts as of the previous report, and when the current run
@@ -274,11 +255,8 @@ class SingleArmDriver:
             qpos order (joints, then gripper) -- the motor's own status name,
             or "SILENT" if it has stopped answering. `bus` has `carrier`
             (bool) plus a count for each fault class in `_BUS_COUNTER_NAMES`.
-            ([], {}) if the installed openarm_can doesn't expose these.
 
         """
-        if not self._health_reporting:
-            return [], {}
         motor_status = []
         for idx, (_, ci, i) in enumerate(self._health_axes):
             if self._axis_was_stale[idx]:
@@ -302,8 +280,6 @@ class SingleArmDriver:
     # fault would otherwise repeat one line hundreds of times a second.
 
     def _log_health_if_changed(self):
-        if not self._health_reporting:
-            return
         # One clock reading for the whole report, so the bus and the axes are
         # judged against the same instant, and so the throttle below costs a
         # single call rather than a second one.
@@ -311,24 +287,8 @@ class SingleArmDriver:
         if now - self._health_checked_at < HEALTH_CHECK_INTERVAL_S:
             return
         self._health_checked_at = now
-        try:
-            self._log_bus_health(now)
-            self._log_axis_health(now)
-        except Exception:
-            # Reporting must never be the reason set_latest_state stops
-            # returning motor state. These are attribute reads and
-            # comparisons on library objects, so a failure means the shape of
-            # what openarm_can returns is not what is expected here -- which
-            # will be just as true next cycle. Give up rather than raise the
-            # same traceback at loop rate, and say so once, since silently
-            # reporting nothing is the failure this whole path exists to
-            # prevent.
-            self._health_reporting = False
-            logger.warning(
-                "%s: bus and per-axis diagnostics disabled after an unexpected failure",
-                self.arm_side,
-                exc_info=True,
-            )
+        self._log_bus_health(now)
+        self._log_axis_health(now)
 
     def _log_bus_health(self, now):
         bus = self.openarm.get_bus_status()

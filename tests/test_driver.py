@@ -319,9 +319,9 @@ def test_driver_caps_command_dt(can_mock, monkeypatch):
 
 # --- bus and per-axis health reporting -------------------------------------
 #
-# These drive the private reporting helpers directly. Going through
-# SingleArmDriver.__init__ would need an openarm_can new enough to expose the
-# diagnostics, and would pay the commutation-settling loop for every case.
+# These drive the private reporting helpers directly rather than going
+# through SingleArmDriver.__init__, which would pay the commutation-settling
+# loop for every case.
 
 
 class CollectionFake:
@@ -357,7 +357,6 @@ def make_health_driver(openarm, collections=(), axes=()):
     driver.arm_side = "right_arm"
     driver.can_interface = "can0"
     driver.openarm = openarm
-    driver._health_reporting = True
     driver._health_collections = list(collections)
     driver._health_axes = list(axes)
     driver._axis_was_stale = [False] * len(driver._health_axes)
@@ -529,40 +528,6 @@ def test_motor_fault_named_in_log_and_cleared(caplog, monkeypatch):
     with caplog.at_level(logging.INFO, logger="openarm_driver.driver"):
         driver._log_axis_health(2.0)
     assert any("error cleared" in r.getMessage() for r in caplog.records)
-
-
-def test_reporting_failure_does_not_propagate(caplog):
-    # A bus status with no counters on it makes the attribute reads raise.
-    # Reporting is diagnostic, and must not take set_latest_state down with
-    # it.
-    driver = make_health_driver(OpenArmFake(bus=None))
-
-    with caplog.at_level(logging.WARNING, logger="openarm_driver.driver"):
-        driver._log_health_if_changed()
-
-    assert any("diagnostics disabled" in r.getMessage() for r in caplog.records)
-
-
-def test_reporting_gives_up_after_a_failure(caplog):
-    # The failure is structural, so retrying it every cycle would repeat the
-    # same traceback at loop rate without ever succeeding.
-    driver = make_health_driver(OpenArmFake(bus=None))
-
-    driver._log_health_if_changed()
-    assert not driver._health_reporting
-
-    caplog.clear()
-    with caplog.at_level(logging.DEBUG, logger="openarm_driver.driver"):
-        driver._log_health_if_changed()
-    assert caplog.records == []
-
-
-def test_reporting_skipped_when_openarm_can_lacks_it():
-    driver = make_health_driver(OpenArmFake(BusFake()))
-    driver._health_reporting = False
-    driver.openarm = None  # would raise if it were consulted
-
-    driver._log_health_if_changed()
 
 
 def test_state_update_reports_health(can_mock, caplog, monkeypatch):

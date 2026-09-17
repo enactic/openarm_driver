@@ -147,28 +147,156 @@ def test_start_syncs_command_to_measured_position(can_mock):
     driver = SingleArmDriver("right_arm")
     assert driver.last_command_dispatch_timestamp_ns is None
     driver.last_command_dispatch_timestamp_ns = 123
+    driver.last_command = np.full(8, -100.0)
     driver._on_start = lambda: None
 
-    driver.start()
+    assert driver.start() is True
 
     assert driver.last_command_dispatch_timestamp_ns is None
     np.testing.assert_allclose(driver.last_command, driver.latest_state["qpos"])
     assert driver.started
 
 
-def test_stop_skips_motion_after_safety_stop(can_mock, monkeypatch):
+class RejectAfterChecker:
+    def __init__(self, accepted_calls):
+        self.accepted_calls = accepted_calls
+        self.calls = 0
+
+    def check(self, position, **kwargs):
+        self.calls += 1
+        if self.accepted_calls is None or self.calls <= self.accepted_calls:
+            return CheckResult(is_safe=True)
+        return CheckResult(is_safe=False, force_stop=True, message="test delta limit")
+
+
+def test_stop(can_mock, monkeypatch):
     driver = SingleArmDriver("right_arm")
+    calls = []
+    driver.started = True
+    driver._on_stop = lambda: calls.append("trajectory")
+    driver.openarm.disable_all = lambda: calls.append("disable")
+    monkeypatch.setattr(driver_module.time, "sleep", lambda _: None)
+
+    driver.stop()
+
+    assert calls == ["trajectory", "disable"]
+    assert not driver.started
+    assert driver.safety_stop_reason is None
+
+
+def test_stop_skips_motion_after_safety_stop(can_mock, monkeypatch, caplog):
+    driver = SingleArmDriver("right_arm", safety_checker=RejectAfterChecker(0))
+    assert driver.send_position(driver.last_command) is False
     disable_calls = []
     driver.started = True
-    driver._safety_stop_reason = "test safety stop"
     driver._on_stop = lambda: pytest.fail("stop trajectory should be skipped")
     driver.openarm.disable_all = lambda: disable_calls.append(True)
     monkeypatch.setattr("openarm_driver.driver.time.sleep", lambda _: None)
 
-    driver.stop()
+    with caplog.at_level(logging.WARNING):
+        driver.stop()
 
     assert not driver.started
     assert disable_calls == [True]
+    assert driver.safety_stop_reason == "test delta limit"
+    assert any("skipping stop trajectory" in r.message for r in caplog.records)
+
+
+def test_safety_stop_reason_is_read_only(can_mock):
+    driver = SingleArmDriver("right_arm", safety_checker=RejectAfterChecker(0))
+    assert driver.safety_stop_reason is None
+    assert driver.send_position(driver.last_command) is False
+    assert driver.safety_stop_reason == "test delta limit"
+    with pytest.raises(AttributeError):
+        driver.safety_stop_reason = None
+
+
+@pytest.mark.parametrize("phase", ["start", "stop"])
+def test_configured_trajectory_stops_on_rejection(can_mock, monkeypatch, caplog, phase):
+    monkeypatch.setattr(driver_module.time, "sleep", lambda _: None)
+    checker = RejectAfterChecker(1)
+    driver = SingleArmDriver("right_arm", safety_checker=checker)
+    move = {"position": {"right_arm": [0.6] * 8}, "hz": 10, "duration": 0.4}
+    monkeypatch.setattr(
+        driver.config, f"get_{phase}_config", lambda: {"moves": [move, move]}
+    )
+    disable_calls = []
+    driver.openarm.disable_all = lambda: disable_calls.append(True)
+    driver.started = True
+
+    with caplog.at_level(logging.WARNING):
+        result = getattr(driver, phase)()
+
+    assert checker.calls == 2
+    assert not driver.started
+    assert driver.safety_stop_reason == "test delta limit"
+    if phase == "start":
+        assert result is False
+        assert disable_calls == []
+        assert any("startup incomplete" in r.message for r in caplog.records)
+    else:
+        assert disable_calls == [True]
+        assert any("stop trajectory interrupted" in r.message for r in caplog.records)
+
+
+def test_legacy_start_hook_cannot_hide_latched_failure(can_mock, monkeypatch):
+    monkeypatch.setattr(driver_module.time, "sleep", lambda _: None)
+    driver = SingleArmDriver("right_arm", safety_checker=RejectAfterChecker(0))
+
+    def legacy_hook():
+        driver.smooth_move(driver.last_command, hz=10, duration=0.2)
+
+    driver._on_start = legacy_hook
+    assert driver.start() is False
+    assert not driver.started
+    assert driver.safety_stop_reason == "test delta limit"
+
+
+def test_start_completes_all_configured_moves(can_mock, monkeypatch):
+    monkeypatch.setattr(driver_module.time, "sleep", lambda _: None)
+    checker = RejectAfterChecker(None)
+    driver = SingleArmDriver("right_arm", safety_checker=checker)
+    move = {"position": {"right_arm": [0.6] * 8}, "hz": 10, "duration": 0.3}
+    monkeypatch.setattr(
+        driver.config, "get_start_config", lambda: {"moves": [move, move]}
+    )
+
+    assert driver.start() is True
+    assert checker.calls == 6
+    assert driver.started
+    assert driver.safety_stop_reason is None
+
+
+def test_start_hook_rejection_latches_and_blocks_commands(can_mock, monkeypatch):
+    monkeypatch.setattr(driver_module.time, "sleep", lambda _: None)
+    checker = RejectAfterChecker(None)
+    driver = SingleArmDriver("right_arm", safety_checker=checker)
+    driver._on_start = lambda: False
+
+    assert driver.start() is False
+    assert not driver.started
+    assert driver.safety_stop_reason == "Start trajectory was interrupted"
+    assert driver.send_position(driver.last_command) is False
+    assert checker.calls == 0
+
+
+def test_recovery_clears_latch_and_resyncs_position(can_mock, monkeypatch):
+    monkeypatch.setattr(driver_module.time, "sleep", lambda _: None)
+    checker = RejectAfterChecker(0)
+    driver = SingleArmDriver("right_arm", safety_checker=checker)
+    assert driver.send_position(driver.last_command) is False
+    driver.stop()
+    checker.accepted_calls = None
+    monkeypatch.setattr(driver.config, "get_start_config", lambda: {"moves": []})
+    driver.last_command = np.full(8, -100.0)
+    driver.last_command_dispatch_timestamp_ns = 123
+
+    assert driver.start() is True
+    assert driver.started
+    assert driver.safety_stop_reason is None
+    assert driver.last_command_dispatch_timestamp_ns is None
+    np.testing.assert_allclose(driver.last_command, driver.latest_state["qpos"])
+    assert driver.send_position(driver.last_command) is True
 
 
 def test_fetch_position(can_mock):
@@ -253,7 +381,32 @@ def test_send_position_does_not_update_state_on_dispatch_error(can_mock, monkeyp
 
 def test_smooth_move(can_mock):
     driver = SingleArmDriver("right_arm")
-    driver.smooth_move([0.0] * 8, 50.0, 1.0)
+    assert driver.smooth_move([0.0] * 8, 50.0, 1.0) is True
+
+
+def test_smooth_move_stops_without_sleeping_after_rejection(can_mock, monkeypatch):
+    checker = RejectAfterChecker(1)
+    driver = SingleArmDriver("right_arm", safety_checker=checker)
+    sleeps = []
+    monkeypatch.setattr(driver_module.time, "sleep", sleeps.append)
+
+    assert driver.smooth_move(driver.last_command, hz=10, duration=1) is False
+    assert checker.calls == 2
+    assert sleeps == [0.1]
+
+
+@pytest.mark.parametrize("phase", ["start", "stop"])
+def test_legacy_trajectory_return_none_is_accepted(can_mock, monkeypatch, phase):
+    driver = SingleArmDriver("right_arm")
+    move = {"position": {"right_arm": [0.5] * 8}, "hz": 10, "duration": 0.1}
+    monkeypatch.setattr(
+        driver.config, f"get_{phase}_config", lambda: {"moves": [move, move]}
+    )
+    calls = []
+    driver.smooth_move = lambda *args, **kwargs: calls.append(True)
+
+    assert getattr(driver, f"move_to_{phase}_position")() is True
+    assert len(calls) == 2
 
 
 def test_pos_limit(can_mock):
@@ -278,7 +431,7 @@ def test_delta_pos_limit(can_mock, config_mock_hard_delta_limit, caplog, monkeyp
         results = [driver.send_position([3.0] * 8) for _ in range(3)]
 
     assert results == [False, False, False]
-    assert driver._safety_stop_reason is not None
+    assert driver.safety_stop_reason is not None
     np.testing.assert_allclose(driver.last_command, previous)
     assert sum("Safety stop" in record.message for record in caplog.records) == 2
 

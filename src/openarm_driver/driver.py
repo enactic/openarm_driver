@@ -223,8 +223,14 @@ class SingleArmDriver:
         self.last_command_time_s = time.monotonic()
         self.last_command_dispatch_timestamp_ns: int | None = None
 
-    def start(self):
-        """Start the arm."""
+    @property
+    def safety_stop_reason(self) -> str | None:
+        """Return the safety-stop reason, or None when no stop is latched."""
+        return self._safety_stop_reason
+
+    def start(self) -> bool:
+        """Start the arm and report whether its startup trajectory completed."""
+        self.started = False
         self._safety_stop_reason = None
         self._last_safety_warning_time_s = None
         self.openarm.set_callback_mode_all(oa.CallbackMode.STATE)
@@ -236,13 +242,33 @@ class SingleArmDriver:
         self.last_command_time_s = time.monotonic()
         # Do not expose command metadata from a previous enable session.
         self.last_command_dispatch_timestamp_ns = None
-        self._on_start()
+        # Accept legacy None-returning hooks while retaining any latched failure.
+        if self._on_start() is False or self._safety_stop_reason is not None:
+            if self._safety_stop_reason is None:
+                self._safety_stop_reason = "Start trajectory was interrupted"
+            logger.warning(
+                "%s: startup incomplete: %s; position commands blocked until stop/start",
+                self.arm_side,
+                self._safety_stop_reason,
+            )
+            return False
         self.started = True
+        return True
 
     def stop(self):
         """Stop the arm."""
         if self._safety_stop_reason is None:
-            self._on_stop()
+            if self._on_stop() is False or self._safety_stop_reason is not None:
+                logger.warning(
+                    "%s: stop trajectory interrupted; disabling motors",
+                    self.arm_side,
+                )
+        else:
+            logger.warning(
+                "%s: skipping stop trajectory after safety stop: %s; disabling motors",
+                self.arm_side,
+                self._safety_stop_reason,
+            )
         self.openarm.disable_all()
         self.set_latest_state(timeout_us=1000)
         time.sleep(1)
@@ -521,8 +547,8 @@ class SingleArmDriver:
         position: ArrayLike,
         hz: float,
         duration: float,
-    ):
-        """Move the arm smoothly by interpolating the trajectory to the final position."""
+    ) -> bool:
+        """Send an interpolated trajectory, returning False on safety rejection."""
         num_steps = int(hz * duration)
         if num_steps <= 0:
             raise ValueError(
@@ -532,30 +558,38 @@ class SingleArmDriver:
             np.array([np.array(self.last_command), np.array(position)]),
             num_steps=num_steps,
         ):
-            self.send_position(smoothed_position)
+            if self.send_position(smoothed_position) is False:
+                return False
             time.sleep(1.0 / hz)
+        return True
 
-    def move_to_start_position(self):
-        """Move to start position."""
+    def move_to_start_position(self) -> bool:
+        """Send the configured start moves, stopping on safety rejection."""
         start_config = self.config.get_start_config()
         if start_config["moves"]:
             for move in start_config["moves"]:
-                self.smooth_move(
+                completed = self.smooth_move(
                     move["position"][self.arm_side],
                     hz=move["hz"],
                     duration=move["duration"],
                 )
+                if completed is False:
+                    return False
+        return True
 
-    def move_to_stop_position(self):
-        """Move to end position."""
+    def move_to_stop_position(self) -> bool:
+        """Send the configured stop moves, stopping on safety rejection."""
         end_config = self.config.get_stop_config()
         if end_config["moves"]:
             for move in end_config["moves"]:
-                self.smooth_move(
+                completed = self.smooth_move(
                     move["position"][self.arm_side],
                     hz=move["hz"],
                     duration=move["duration"],
                 )
+                if completed is False:
+                    return False
+        return True
 
     def _interpolate(
         self, positions: np.ndarray, num_steps: int
@@ -569,7 +603,7 @@ class SingleArmDriver:
             yield self.openarm.get_gripper().get_motors()[0]
 
     def _on_start(self):
-        self.move_to_start_position()
+        return self.move_to_start_position()
 
     def _on_stop(self):
-        self.move_to_stop_position()
+        return self.move_to_stop_position()

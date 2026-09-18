@@ -37,10 +37,10 @@ joint_limits:
     - [-0.4, 1.0472]        # joint8
 
 # Joint offsets for right and left arms
-# These offsets are examples for OpenArm-cell that calibrated using the **Calibration Jig**
+# These offsets are examples for OpenArm-cell that calibrated using the openarm_calibration package.
 joint_offsets:
-  right_arm: [0.0, -0.506145, 1.570796, -1.745329, 0.0, 0.331612, -1.570796, 0.0]
-  left_arm: [0.0, 0.506145, -1.570796, -1.745329, 0.0, -0.331612, 1.570796, 0.0]
+  right_arm: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  left_arm: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 # Maximum accepted single-command position jump (rad).
 joint_delta_position_limits:
@@ -70,7 +70,7 @@ can_interface:
   left_arm: "can1"
 
 # Motor configuration
-motor_config: 
+motor_config:
   types: ['DM8009', 'DM8009', 'DM4340', 'DM4340', 'DM4310', 'DM4310', 'DM4310', 'DM4310']
   send_ids: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
   recv_ids: [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]
@@ -80,7 +80,7 @@ motor_config:
 # control_gains entries (index 7) are ignored. Other joints are unaffected.
 gripper_posforce: true
 # Used only when gripper_posforce is true.
-# index 0: max rad/s  index 1: max force (Nm)
+# index 0: max speed (rad/s)  index 1: max torque (Nm)
 gripper_posforce_limits: [50.0, 1.0]
 
 # Default PD control gains
@@ -93,8 +93,8 @@ start:
   moves:
     - name: "initial"
       position:
-        right_arm: [0.0, 0.0, -0.0, 1.5707963267948966, 0.0, 0.0, 0.0, -0.4]
-        left_arm: [-0.0, 0.0, 0.0, 1.5707963267948966, 0.0, 0.0, 0.0, 0.4]
+          right_arm: [0.0, 0.0, -0.0, 1.7707963267948966, 0.0, 0.0, 0.0, -0.4]
+          left_arm: [-0.0, 0.0, 0.0, 1.7707963267948966, 0.0, 0.0, 0.0, 0.4]
       hz: 50
       duration: 2
 

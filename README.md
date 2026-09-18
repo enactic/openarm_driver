@@ -75,6 +75,46 @@ elapsed command time automatically, so callers do not need to provide the node
 control frequency. Custom configurations may omit this field to disable command
 velocity limiting.
 
+Elapsed command time is capped at 40 ms. This bounds the position increment
+allowed by the velocity limiter after a scheduling pause or command gap.
+At 250 Hz, a normal 4 ms interval still uses 4 ms in the calculation.
+
+## Safety stops and recovery
+
+`send_position()` returns `True` after dispatching the checked target, including
+any safety clamping. A force-stop safety rejection returns `False` and latches
+the reason in the read-only `arm.safety_stop_reason` property. The rejected target
+is never dispatched. Further position commands return `False`, with warnings
+at most once every two seconds while commands are attempted. This replaces the
+previous `RuntimeError` for force-stop safety rejections.
+
+The latch stops new position commands and leaves the last dispatched target in
+place. It does not automatically disable motors or periodically resend that
+target; actual holding behavior depends on the motor and communication state.
+An explicit `stop()` skips the return trajectory after a latch, logs the reason,
+and calls `disable_all()`. If a safety rejection interrupts a normal stop
+trajectory, `stop()` still proceeds to disable the motors.
+
+After inspecting and resolving the cause, recover with `stop()` followed by
+`start()`. Starting clears the latch and synchronizes the command baseline to
+the position read from the motors before sending the startup trajectory.
+`safety_stop_reason` is `None` when no safety stop is latched. The existing
+`get_health()` return structure remains `(motor_status, bus)`.
+
+`smooth_move()`, `move_to_start_position()`, `move_to_stop_position()`, and
+`start()` return `False` when their trajectory is rejected and `True` when it
+finishes dispatching. Rejection stops the remaining trajectory steps. A failed
+start leaves `started=False`, retains the reason, and blocks subsequent position
+commands until recovery. Motors may still be enabled until `stop()` is called.
+Successful dispatch does not verify physical arrival at the target.
+
+Existing callers can continue to ignore these return values. Custom trajectory
+hooks returning `None` remain supported; an explicit `False` or a latched safety
+stop prevents successful startup. Configuration errors and CAN exceptions retain
+their exception behavior. This change requires no additional node inputs or
+metadata. It adds no fresh-feedback startup gate: cached feedback can still be
+stale when motors are not responding. Health diagnostics remain observational.
+
 ## Development
 
 ### Test

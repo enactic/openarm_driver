@@ -37,7 +37,7 @@ joint_limits:
     - [-0.4, 1.0472]        # joint8
 
 # Joint offsets for right and left arms
-# These offsets are examples for OpenArm-cell that calibrated using the **Calibration Jig**
+# These offsets are examples for OpenArm Cell that calibrated using the **Calibration Jig**
 joint_offsets:
   right_arm: [0.0, -0.506145, 1.570796, -1.745329, 0.0, 0.331612, -1.570796, 0.0]
   left_arm: [0.0, 0.506145, -1.570796, -1.745329, 0.0, -0.331612, 1.570796, 0.0]

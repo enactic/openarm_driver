@@ -107,3 +107,11 @@ stop:
         left_arm: [-0.0, 0.0, 0.0, 1.5707963267948966, 0.0, 0.0, 0.0, 0.0]
       hz: 50
       duration: 2
+    # Hang the arms down before the motors are disabled. The forearms
+    # drop if the motors are disabled at the "initial" position.
+    - name: "hang"
+      position:
+        right_arm: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        left_arm: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+      hz: 50
+      duration: 2
